@@ -1,0 +1,115 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Виртуальные окружения (Virtual Environments) ---
+.venv
+venv
+ENV
+env/
+venv.bak/
+env.bak/
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+# Исключаем файлы автосохранения
+*-checkpoint.py
+*-checkpoint.ipynb
+# Если вы используете расширения для экспорта (nbconvert)
+.nbsphinx_resources/
+
+# --- macOS Specific ---
+.DS_Store
+.AppleDouble
+.LSOverride
+# Thumbnails
+._*
+# Файлы рабочего стола и сетевых дисков
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# --- IDE & Editors ---
+# PyCharm / IntelliJ
+.idea/
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+# Neovim / Vim
+[._]*.s[a-v][a-z]
+!*.svg
+[._]sw[a-p]
+.netrwhist
+undo/
+Session.vim
+
+# --- Переменные окружения (Environment Variables) ---
+.env
+.venv
+env.ini
+.direnv/
+
+# --- Тестирование и отчеты ---
+.target/
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesist/
+.benchmarks/
+
+# --- Библиотеки и инструменты ---
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+# Pyre
+.pyre/
+# Ruff
+.ruff_cache/
+# Cython
+cython_debug/
+
+# --- Файлы проекта ---
+
+model/
+adapters/
+instructions/
+
+*.log
+*.zip
+*.rar
+*.bat
