@@ -559,7 +559,12 @@ def _strict_protect_quotes(original, corrected):
                 if c not in _ALL_QUOTES:
                     out.append(c)
         elif op == 'delete':
-            out.extend(orig_chars[i1:i2])
+            chunk = orig_chars[i1:i2]
+            # Восстанавливаем удалённые символы только если среди них есть кавычка —
+            # иначе ветка откатывала бы любые корректные удаления букв
+            # (напр., "отфвыветственность" → "ответственность").
+            if any(c in _ALL_QUOTES for c in chunk):
+                out.extend(chunk)
     return ''.join(out)
 
 

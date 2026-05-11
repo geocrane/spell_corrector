@@ -235,13 +235,36 @@ def _apply_diff_to_range(doc_com, rng, old_text, new_text):
             sub_rng = doc_com.Range(abs_start, abs_end)
             sub_rng.Text = new_text[j1:j2]
             applied_count += 1
-    except Exception:
+    except Exception as e:
+        logger.debug("_apply_diff_to_range exception, откатываем %d опкодов: %s",
+                     applied_count, e)
         for _ in range(applied_count):
             try:
                 doc_com.Undo()
             except Exception:
                 break
         return False
+
+    # Пост-валидация: считываем результат и сверяем с new_text.
+    # Если позиции «съехали» (Word AutoCorrect, скрытые символы и т.п.),
+    # откатываемся и возвращаем False, чтобы вызвался fallback.
+    try:
+        delta = len(new_text) - len(old_text)
+        check_rng = doc_com.Range(range_start, rng.End + delta)
+        actual = _strip_word_special(check_rng.Text or "").rstrip('\r\n')
+        if actual != new_text:
+            logger.warning(
+                "_apply_diff_to_range пост-проверка не прошла: ожидали %r, получили %r — откатываемся",
+                new_text[:80], actual[:80],
+            )
+            for _ in range(applied_count):
+                try:
+                    doc_com.Undo()
+                except Exception:
+                    break
+            return False
+    except Exception as e:
+        logger.debug("_apply_diff_to_range пост-проверка EXCEPTION: %s", e)
 
     return True
 
