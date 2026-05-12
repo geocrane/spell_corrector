@@ -130,6 +130,64 @@ class DocumentProvider(ABC):
         """
         ...
 
+    def navigate_to_range(self, doc: dict, start: int, end: int) -> bool:
+        """Выделить произвольный диапазон позиций в документе.
+
+        По умолчанию не поддерживается. Используется UI режима ошибок для
+        навигации к конкретной пословной правке.
+        """
+        return False
+
+    def set_revisions_mode(self, doc: dict, on: bool) -> bool:
+        """Включить/выключить режим Track Changes в документе.
+
+        По умолчанию не поддерживается (актуально для Word).
+        """
+        return False
+
+    def replace_sentence_text_with_corrections(
+        self,
+        doc: dict,
+        sentence: dict,
+        new_text: str,
+        old_text: Optional[str] = None,
+        all_sentences: Optional[list] = None,
+        track_revisions: bool = False,
+    ) -> dict:
+        """Заменить текст фрагмента и вернуть пословные правки + сдвиг.
+
+        По умолчанию делегирует в replace_sentence_text без granular-corrections.
+        Провайдеры, поддерживающие пословный diff (Word), переопределяют.
+
+        Returns:
+            dict с ключами:
+                ok (bool), corrections (list[dict]),
+                delta (int), old_end (int), rng_start (int).
+        """
+        ok = self.replace_sentence_text(doc, sentence, new_text, old_text, all_sentences)
+        return {"ok": ok, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
+
+    def navigate_to_correction(self, doc: dict, correction: dict) -> bool:
+        """Выделить диапазон конкретной пословной правки.
+
+        Default-реализация читает word_range_start/end и вызывает
+        navigate_to_range. Провайдеры со своей идентификацией (Excel:
+        ячейка) переопределяют.
+        """
+        start = correction.get("word_range_start")
+        end = correction.get("word_range_end")
+        if start is None or end is None:
+            return False
+        return self.navigate_to_range(doc, start, end)
+
+    def get_last_error(self) -> Optional[str]:
+        """Вернуть текст последней ошибки (если провайдер её сохраняет).
+
+        Используется UI для показа уведомлений типа «Excel заблокирован».
+        По умолчанию возвращает None.
+        """
+        return None
+
     def get_icon(self) -> tuple[str, str]:
         """Вернуть иконку и цвет для отображения в UI.
 
@@ -137,3 +195,42 @@ class DocumentProvider(ABC):
             tuple: (символ, цвет) — например ("W", "#2B579A").
         """
         return ("?", "#888888")
+
+    # ─── Унификация форматирования (опционально) ────────────────────────
+
+    def analyze_format(self, doc: dict) -> Optional[dict]:
+        """Проанализировать форматирование и вернуть преобладающие значения.
+
+        Returns:
+            dict с ключами dominant_font_name, dominant_font_size,
+            dominant_style, coverage, total_chars — или None если провайдер
+            не поддерживает анализ форматирования.
+        """
+        return None
+
+    def apply_format_uniform(
+        self, doc: dict, attr: str, target_value: Any = None,
+    ) -> Optional[dict]:
+        """Применить преобладающее значение атрибута ко всему основному тексту.
+
+        Args:
+            doc: Словарь документа.
+            attr: "font_name" | "font_size" | "style".
+            target_value: Конкретное значение или None (тогда провайдер сам
+                          считает преобладающее через analyze_format).
+
+        Returns:
+            Лёгкий дескриптор snapshot для последующего restore_format, либо
+            None если операция не поддерживается / не удалась. Дескриптор
+            должен содержать как минимум {"snap_id": str, "attr": str}.
+        """
+        return None
+
+    def restore_format(self, doc: dict, snapshot_descriptor: dict) -> bool:
+        """Восстановить исходный формат по дескриптору snapshot.
+
+        Returns:
+            True если откат успешен; False если snapshot не найден или
+            документ был отредактирован между apply и restore.
+        """
+        return False

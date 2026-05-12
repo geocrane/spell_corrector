@@ -69,3 +69,76 @@ def replace_sentence_text(doc, sentence, new_text, old_text=None, all_sentences=
     if provider:
         return provider.replace_sentence_text(doc, sentence, new_text, old_text, all_sentences)
     return False
+
+
+def replace_sentence_text_with_corrections(
+    doc, sentence, new_text,
+    old_text=None, all_sentences=None, track_revisions=False,
+):
+    """Заменить текст предложения с возвратом пословных правок и сдвига позиций."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.replace_sentence_text_with_corrections(
+            doc, sentence, new_text, old_text, all_sentences, track_revisions,
+        )
+    return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
+
+
+def navigate_to_range(doc, start, end):
+    """Выделить произвольный диапазон в документе."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.navigate_to_range(doc, start, end)
+    return False
+
+
+def set_revisions_mode(doc, on):
+    """Включить/выключить режим Track Changes в документе."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.set_revisions_mode(doc, on)
+    return False
+
+
+def navigate_to_correction(doc, correction):
+    """Выделить диапазон конкретной пословной правки (режим ошибок)."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.navigate_to_correction(doc, correction)
+    return False
+
+
+def get_last_provider_error(doc):
+    """Вернуть последнюю ошибку провайдера документа (или None)."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.get_last_error()
+    return None
+
+
+def analyze_format(doc):
+    """Проанализировать форматирование документа (преобладающий шрифт/размер/стиль)."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.analyze_format(doc)
+    return None
+
+
+def apply_format_uniform(doc, attr, target_value=None):
+    """Применить унификацию форматирования по одному атрибуту.
+
+    Returns:
+        dict-дескриптор snapshot или None.
+    """
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.apply_format_uniform(doc, attr, target_value)
+    return None
+
+
+def restore_format(doc, descriptor):
+    """Откатить унификацию по ранее сохранённому дескриптору snapshot."""
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.restore_format(doc, descriptor)
+    return False

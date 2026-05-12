@@ -7,27 +7,21 @@
 import difflib
 import logging
 import re
+import uuid
+from dataclasses import asdict
 from typing import Any, Optional
 
 import win32com.client
 import win32gui
 
+from core import format_unifier
 from core.providers.base import DocumentProvider
+from core.sentence_split import ABBREV_PATTERN as _ABBREV_PATTERN, starts_with_lower as _starts_with_lower
+from core.word_corrections import build_word_corrections
 
 logger = logging.getLogger("core.providers.word")
 
 # ─── Утилиты ────────────────────────────────────────────────────────────
-
-_ABBREV_PATTERN = re.compile(
-    r'(?:'
-    r'г\.г|гг|тыс|млн|млрд|трлн|руб|коп|ед|шт'
-    r'|т\.д|т\.п|т\.е|т\.к|пр|др'
-    r'|ул|корп|кв|стр|пер|обл'
-    r'|и\.о|врио|проф|доц|акад'
-    r'|рис|табл|гл|пп|разд|см|ср|напр|прим'
-    r'|(?<![а-яА-Яa-zA-ZёЁ])(?:г|д|п|ч|ст|им|[А-ЯA-Z])'
-    r')\.$'
-)
 
 _WORD_SPECIAL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
@@ -41,15 +35,6 @@ _BODY_START_PATTERN = re.compile(
 _BULLET_PREFIX_RE = re.compile(
     r'^(\s*(?:\d+[.)]\s+|[•\-\u2022\u2023\u2043\u25e6\u25aa\u25ab\u2027\u2013\u2014\u2212*·]\s+))'
 )
-
-
-def _starts_with_lower(text):
-    for ch in text:
-        if ch.isalpha():
-            return ch.islower()
-        if not ch.isspace():
-            return False
-    return False
 
 
 def _normalize_ws(text):
@@ -204,8 +189,15 @@ def _find_sentence_range(doc_com, sentence, expected_text=None):
     return None
 
 
-def _apply_diff_to_range(doc_com, rng, old_text, new_text):
-    """Применить посимвольный diff к Range, сохраняя форматирование."""
+def _apply_diff_to_range(doc_com, rng, old_text, new_text, skip_post_validation=False):
+    """Применить посимвольный diff к Range, сохраняя форматирование.
+
+    При skip_post_validation=True пост-проверка пропускается. Это нужно при
+    включённом TrackRevisions=True: Word держит и зачёркнутый оригинал, и
+    новые вставки в одном диапазоне, и обычное сравнение текста не работает.
+    Также при skip_post_validation=True мы НЕ делаем Undo при ошибке, чтобы
+    не разрушить уже записанные ревизии.
+    """
     full_text = rng.Text
     if not full_text:
         return False
@@ -236,18 +228,19 @@ def _apply_diff_to_range(doc_com, rng, old_text, new_text):
             sub_rng.Text = new_text[j1:j2]
             applied_count += 1
     except Exception as e:
-        logger.debug("_apply_diff_to_range exception, откатываем %d опкодов: %s",
-                     applied_count, e)
-        for _ in range(applied_count):
-            try:
-                doc_com.Undo()
-            except Exception:
-                break
+        logger.debug("_apply_diff_to_range exception, applied=%d, skip_post=%s: %s",
+                     applied_count, skip_post_validation, e)
+        if not skip_post_validation:
+            for _ in range(applied_count):
+                try:
+                    doc_com.Undo()
+                except Exception:
+                    break
         return False
 
-    # Пост-валидация: считываем результат и сверяем с new_text.
-    # Если позиции «съехали» (Word AutoCorrect, скрытые символы и т.п.),
-    # откатываемся и возвращаем False, чтобы вызвался fallback.
+    if skip_post_validation:
+        return True
+
     try:
         delta = len(new_text) - len(old_text)
         check_rng = doc_com.Range(range_start, rng.End + delta)
@@ -265,6 +258,85 @@ def _apply_diff_to_range(doc_com, rng, old_text, new_text):
             return False
     except Exception as e:
         logger.debug("_apply_diff_to_range пост-проверка EXCEPTION: %s", e)
+
+    return True
+
+
+def _apply_diff_to_range_chunked(doc_com, rng, old_text, new_text, corrections,
+                                  skip_post_validation=False):
+    """Применить пословные правки к Range отдельными мини-заменами.
+
+    При skip_post_validation=True (включённый TrackRevisions) пост-проверка
+    и Undo-rollback пропускаются: Word держит «оригинал + вставка» в одном
+    диапазоне, и сравнение текста не работает; а Undo откатил бы записанную
+    ревизию и испортил историю изменений.
+    """
+    full_text = rng.Text
+    if not full_text:
+        return False
+
+    leading_offset = len(full_text) - len(full_text.lstrip())
+    content_text = full_text.strip()
+
+    if _strip_word_special(content_text) != old_text:
+        return False
+
+    range_start = rng.Start + leading_offset
+
+    pos_map = []
+    for idx, ch in enumerate(content_text):
+        if not _WORD_SPECIAL_RE.search(ch):
+            pos_map.append(idx)
+    pos_map.append(len(content_text))
+
+    applied_count = 0
+    try:
+        # Идём справа налево, чтобы позиции более ранних правок не сдвигались.
+        for corr in reversed(corrections):
+            i1 = corr["i1_in_original"]
+            i2 = corr["i2_in_original"]
+            j1 = corr["j1_in_corrected"]
+            j2 = corr["j2_in_corrected"]
+
+            if i1 == i2 and j1 == j2:
+                continue
+
+            abs_start = range_start + pos_map[i1]
+            abs_end = range_start + pos_map[i2]
+            sub_rng = doc_com.Range(abs_start, abs_end)
+            sub_rng.Text = new_text[j1:j2]
+            applied_count += 1
+    except Exception as e:
+        logger.debug("_apply_diff_to_range_chunked exception applied=%d skip_post=%s: %s",
+                     applied_count, skip_post_validation, e)
+        if not skip_post_validation:
+            for _ in range(applied_count):
+                try:
+                    doc_com.Undo()
+                except Exception:
+                    break
+        return False
+
+    if skip_post_validation:
+        return True
+
+    try:
+        delta = len(new_text) - len(old_text)
+        check_rng = doc_com.Range(range_start, rng.End + delta)
+        actual = _strip_word_special(check_rng.Text or "").rstrip('\r\n')
+        if actual != new_text:
+            logger.warning(
+                "_apply_diff_to_range_chunked пост-проверка не прошла: ожидали %r, получили %r — откатываемся",
+                new_text[:80], actual[:80],
+            )
+            for _ in range(applied_count):
+                try:
+                    doc_com.Undo()
+                except Exception:
+                    break
+            return False
+    except Exception as e:
+        logger.debug("_apply_diff_to_range_chunked пост-проверка EXCEPTION: %s", e)
 
     return True
 
@@ -343,6 +415,11 @@ def _extract_sentences_from_doc(doc_com):
 
 class WordProvider(DocumentProvider):
     """Провайдер для Microsoft Word."""
+
+    def __init__(self):
+        # snap_id → format_unifier.Snapshot. Хранятся в провайдере, наружу
+        # отдаётся только лёгкий дескриптор {snap_id, attr, target, coverage}.
+        self._snapshots: dict[str, format_unifier.Snapshot] = {}
 
     @property
     def doc_type(self) -> str:
@@ -455,15 +532,57 @@ class WordProvider(DocumentProvider):
         old_text: Optional[str] = None,
         all_sentences: Optional[list] = None,
     ) -> bool:
+        """Тонкая обёртка, оставленная для обратной совместимости (Outlook/Excel)."""
+        result = self.replace_sentence_text_with_corrections(
+            doc, sentence, new_text, old_text, all_sentences, track_revisions=False,
+        )
+        return result["ok"]
+
+    def replace_sentence_text_with_corrections(
+        self,
+        doc: dict,
+        sentence: dict,
+        new_text: str,
+        old_text: Optional[str] = None,
+        all_sentences: Optional[list] = None,
+        track_revisions: bool = False,
+    ) -> dict:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
-            return False
+            return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
 
+        prev_track = None
         try:
+            try:
+                prev_track = bool(doc_com.TrackRevisions)
+            except Exception:
+                prev_track = None
+
+            if track_revisions:
+                try:
+                    doc_com.TrackRevisions = True
+                    logger.info("TrackRevisions включён для index=%s (был=%s)",
+                                sentence.get("index"), prev_track)
+                except Exception as e:
+                    logger.warning("Не удалось включить TrackRevisions: %s", e)
+
+            # Сохранить общую длину документа и число ревизий ДО операции —
+            # нужно, чтобы корректно вычислить реальный сдвиг позиций.
+            doc_len_before = None
+            revisions_before = None
+            try:
+                doc_len_before = int(doc_com.Range().End)
+            except Exception:
+                pass
+            try:
+                revisions_before = int(doc_com.Revisions.Count)
+            except Exception:
+                pass
+
             expected = old_text if old_text is not None else sentence.get("text", "")
             rng = _find_sentence_range(doc_com, sentence, expected_text=expected)
             if rng is None:
-                return False
+                return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
 
             ref_text = old_text if old_text is not None else sentence.get("text", "")
             new_text = _preserve_bullet_prefix(ref_text, new_text)
@@ -471,18 +590,86 @@ class WordProvider(DocumentProvider):
             rng_start = rng.Start
             old_end = rng.End
 
+            def _real_delta(default):
+                """Вычислить актуальный сдвиг длины документа после операции.
+
+                При TrackRevisions «удалённый» текст не уходит из документа —
+                он остаётся как зачёркнутый, поэтому len(new)-len(old) неверен.
+                """
+                if doc_len_before is None:
+                    return default
+                try:
+                    return int(doc_com.Range().End) - doc_len_before
+                except Exception:
+                    return default
+
+            def _log_revisions_after():
+                if not track_revisions:
+                    return
+                try:
+                    after = int(doc_com.Revisions.Count)
+                    delta_revs = (after - revisions_before) if revisions_before is not None else after
+                    logger.info(
+                        "ревизий стало %s (+%s) после apply index=%s",
+                        after, delta_revs, sentence.get("index"),
+                    )
+                except Exception as e:
+                    logger.debug("не удалось прочитать Revisions.Count: %s", e)
+
+            corrections = []
             if old_text is not None:
-                if _apply_diff_to_range(doc_com, rng, old_text, new_text):
-                    delta = len(new_text) - len(old_text)
+                corrections = build_word_corrections(
+                    old_text, new_text,
+                    sentence_index=sentence.get("index", 0),
+                    sentence_range_start=rng_start,
+                )
+
+                if corrections and _apply_diff_to_range_chunked(
+                    doc_com, rng, old_text, new_text, corrections,
+                    skip_post_validation=track_revisions,
+                ):
+                    delta = _real_delta(len(new_text) - len(old_text))
                     _after_replacement(sentence, new_text, rng_start, old_end, delta, all_sentences)
-                    return True
+                    _log_revisions_after()
+                    return {
+                        "ok": True, "corrections": corrections,
+                        "delta": delta, "old_end": old_end, "rng_start": rng_start,
+                    }
+
+                # Перепоиск range на случай частичного применения и отката
                 rng = _find_sentence_range(doc_com, sentence, expected_text=expected)
                 if rng is None:
-                    return False
+                    return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
                 rng_start = rng.Start
                 old_end = rng.End
 
-            # Fallback
+                if _apply_diff_to_range(
+                    doc_com, rng, old_text, new_text,
+                    skip_post_validation=track_revisions,
+                ):
+                    delta = _real_delta(len(new_text) - len(old_text))
+                    _after_replacement(sentence, new_text, rng_start, old_end, delta, all_sentences)
+                    _log_revisions_after()
+                    return {
+                        "ok": True, "corrections": corrections,
+                        "delta": delta, "old_end": old_end, "rng_start": rng_start,
+                    }
+
+                rng = _find_sentence_range(doc_com, sentence, expected_text=expected)
+                if rng is None:
+                    return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
+                rng_start = rng.Start
+                old_end = rng.End
+
+            # Fallback: замена всего предложения. При track_revisions=True это даст
+            # одну большую ревизию для этого предложения — но это лучше, чем потерять
+            # запись (раньше мы тут выключали TrackRevisions и теряли подсветку).
+            if track_revisions:
+                logger.warning(
+                    "fallback на полную замену предложения index=%s — будет одна большая ревизия",
+                    sentence.get("index"),
+                )
+
             original_text = rng.Text or ""
             stripped_original = original_text.rstrip('\r\n')
             trailing_cr_count = len(original_text) - len(stripped_original)
@@ -494,12 +681,158 @@ class WordProvider(DocumentProvider):
             else:
                 rng.Text = new_text_stripped
 
-            delta = len(new_text_stripped) - len(stripped_original)
+            delta = _real_delta(len(new_text_stripped) - len(stripped_original))
             _after_replacement(sentence, new_text, rng_start, old_end, delta, all_sentences)
+            _log_revisions_after()
+            return {
+                "ok": True, "corrections": corrections,
+                "delta": delta, "old_end": old_end, "rng_start": rng_start,
+            }
+        except Exception as e:
+            logger.error("replace_sentence_text_with_corrections error: %s", e)
+            return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
+        finally:
+            if track_revisions and prev_track is not None:
+                try:
+                    doc_com.TrackRevisions = prev_track
+                except Exception:
+                    pass
+
+    def navigate_to_range(self, doc: dict, start: int, end: int) -> bool:
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return False
+        try:
+            rng = doc_com.Range(start, end)
+            rng.Select()
             return True
         except Exception as e:
-            logger.error("replace_sentence_text error: %s", e)
+            logger.error("navigate_to_range error (%s, %s): %s", start, end, e)
             return False
+
+    def set_revisions_mode(self, doc: dict, on: bool) -> bool:
+        """Включить/выключить ОТОБРАЖЕНИЕ ревизий в Word.
+
+        TrackRevisions (запись изменений) НЕ трогаем — она управляется временно
+        при каждом apply_correction_to_doc. Здесь меняется только видимость.
+        """
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            logger.warning("set_revisions_mode: нет com_object")
+            return False
+
+        on = bool(on)
+        any_ok = False
+
+        # Попытка 1: новое API RevisionsFilter (Word 2013+).
+        # wdRevisionsViewFinal = 0 (показывать после правок), wdRevisionsViewOriginal = 1.
+        # wdRevisionsMarkupAll = 1, wdRevisionsMarkupNone = 0,
+        # wdRevisionsMarkupSimple = 2.
+        try:
+            rf = doc_com.ActiveWindow.View.RevisionsFilter
+            rf.View = 0
+            rf.Markup = 1 if on else 0
+            any_ok = True
+            logger.info("set_revisions_mode: RevisionsFilter.Markup=%s OK", rf.Markup)
+        except Exception as e:
+            logger.warning("set_revisions_mode: RevisionsFilter недоступен: %s", e)
+
+        # Попытка 2: старое API ShowRevisionsAndComments.
+        try:
+            view = doc_com.ActiveWindow.View
+            view.ShowRevisionsAndComments = on
+            view.RevisionsView = 0  # wdRevisionsViewFinal
+            any_ok = True
+            logger.info("set_revisions_mode: ShowRevisionsAndComments=%s OK", on)
+        except Exception as e:
+            logger.warning("set_revisions_mode: ShowRevisionsAndComments недоступен: %s", e)
+
+        # Дополнительно: типы ревизий, чтобы при on=True гарантированно показывались
+        # вставки и удаления (иначе помечен только формат).
+        if on:
+            for attr in ("ShowInsertionsAndDeletions", "ShowFormatChanges"):
+                try:
+                    setattr(doc_com.ActiveWindow.View, attr, True)
+                except Exception as e:
+                    logger.debug("set_revisions_mode: %s недоступен: %s", attr, e)
+
+        if not any_ok:
+            logger.error("set_revisions_mode: ни одно API отображения не сработало")
+            return False
+        return True
 
     def get_icon(self) -> tuple[str, str]:
         return ("W", "#2B579A")
+
+    # ─── Унификация форматирования ────────────────────────────────────────
+
+    def analyze_format(self, doc: dict) -> Optional[dict]:
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return None
+        try:
+            stats = format_unifier.analyze_format(doc_com, skip_heading_styles=True)
+        except Exception as e:
+            logger.error("analyze_format error: %s", e)
+            return None
+        return asdict(stats)
+
+    def apply_format_uniform(
+        self, doc: dict, attr: str, target_value: Any = None,
+    ) -> Optional[dict]:
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return None
+
+        coverage = None
+        if target_value is None:
+            try:
+                stats = format_unifier.analyze_format(doc_com, skip_heading_styles=True)
+            except Exception as e:
+                logger.error("apply_format_uniform: analyze failed: %s", e)
+                return None
+            if attr == "font_name":
+                target_value = stats.dominant_font_name
+            elif attr == "font_size":
+                target_value = stats.dominant_font_size
+            elif attr == "style":
+                target_value = stats.dominant_style
+            coverage = stats.coverage.get(attr)
+
+        if target_value is None:
+            logger.info("apply_format_uniform: target_value is None для attr=%s, skip", attr)
+            return None
+
+        try:
+            snap = format_unifier.apply_unified_attribute(
+                doc_com, attr, target_value, skip_heading_styles=True,
+            )
+        except Exception as e:
+            logger.error("apply_format_uniform error: %s", e)
+            return None
+
+        snap_id = f"{id(doc_com)}:{attr}:{uuid.uuid4().hex[:8]}"
+        self._snapshots[snap_id] = snap
+        return {
+            "snap_id": snap_id,
+            "attr": attr,
+            "target": target_value,
+            "coverage": coverage,
+            "segments": len(snap.ranges),
+        }
+
+    def restore_format(self, doc: dict, snapshot_descriptor: dict) -> bool:
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return False
+        snap_id = snapshot_descriptor.get("snap_id") if snapshot_descriptor else None
+        if not snap_id:
+            return False
+        snap = self._snapshots.pop(snap_id, None)
+        if snap is None:
+            return False
+        try:
+            return format_unifier.restore_snapshot(doc_com, snap)
+        except Exception as e:
+            logger.error("restore_format error: %s", e)
+            return False

@@ -22,18 +22,30 @@ class DocStateCache:
         self.generation: int = 0
         self.cancel_event: Optional[threading.Event] = None
 
-    def save(self, doc_id: int, check_results: dict, sentences: list) -> None:
+    def save(
+        self,
+        doc_id: int,
+        check_results: dict,
+        sentences: list,
+        word_corrections: Optional[list] = None,
+        revisions_mode: bool = False,
+        format_state: Optional[dict] = None,
+    ) -> None:
         """Сохранить состояние проверки документа в кэш."""
         self._cache[doc_id] = {
             "check_results": check_results.copy(),
             "sentences": sentences.copy(),
+            "word_corrections": list(word_corrections or []),
+            "revisions_mode": bool(revisions_mode),
+            "format_state": dict(format_state) if format_state else {},
         }
 
     def load(self, doc_id: int) -> Optional[Dict[str, Any]]:
         """Загрузить состояние проверки документа из кэша.
 
         Returns:
-            dict с ключами "check_results" и "sentences", или None.
+            dict с ключами "check_results", "sentences",
+            "word_corrections", "revisions_mode", "format_state", или None.
         """
         return self._cache.get(doc_id)
 

@@ -82,12 +82,12 @@ def highlight_selected_tile(tile_frames, selected_doc):
         if selected_doc and doc_id == id(selected_doc):
             tile.config(bg="#cce5ff")
             for child in tile.winfo_children():
-                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O"):
+                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O", "X"):
                     child.config(bg="#cce5ff")
         else:
             tile.config(bg="#f0f0f0")
             for child in tile.winfo_children():
-                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O"):
+                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O", "X"):
                     child.config(bg="#f0f0f0")
 
 
@@ -384,6 +384,55 @@ def create_diff_widget(parent, original, corrected, after_callback=None):
         parent.after(50, adjust_height)
 
     return text_widget
+
+
+def create_word_correction_tile(parent, correction, on_click):
+    """Создать плитку для одной пословной правки (режим ошибок).
+
+    Args:
+        parent: Родительский виджет.
+        correction: WordCorrection-словарь (см. core.word_corrections).
+        on_click: Callback(correction) при клике на плитку.
+
+    Returns:
+        tk.Frame: Плитка.
+    """
+    tile = tk.Frame(parent, relief="raised", borderwidth=1, bg="#f0f0f0")
+    tile.pack(fill=tk.X, pady=2, padx=2)
+
+    header_frame = tk.Frame(tile, bg="#f0f0f0")
+    header_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 0))
+
+    sentence_index = correction.get("sentence_index", 0)
+    index_label = tk.Label(
+        header_frame, text=str(sentence_index + 1), font=("Arial", 10),
+        fg="white", bg="#28a745", width=3, height=1,
+    )
+    index_label.pack(side=tk.LEFT)
+
+    original_chunk = correction.get("original_chunk", "")
+    corrected_chunk = correction.get("corrected_chunk", "")
+
+    text_widget = create_diff_widget(tile, original_chunk, corrected_chunk)
+
+    for widget in (tile, header_frame, index_label, text_widget):
+        widget.bind("<Button-1>", lambda e, c=correction: on_click(c))
+        widget.configure(cursor="hand2")
+
+    return tile
+
+
+def set_toggle_button_state(btn: tk.Button, is_active: bool) -> None:
+    """Покрасить кнопку как toggle: зелёный = активна, серый = неактивна."""
+    if is_active:
+        btn.config(bg="#28a745", fg="white", activebackground="#1e7e34", activeforeground="white")
+    else:
+        btn.config(bg="#f0f0f0", fg="#333333", activebackground="#d0d0d0", activeforeground="#333333")
+
+
+def set_toggle_button_mixed(btn: tk.Button) -> None:
+    """Промежуточное состояние toggle-кнопки (часть подкнопок активна)."""
+    btn.config(bg="#3a82f7", fg="white", activebackground="#1f5fc9", activeforeground="white")
 
 
 def insert_deleted_text(text_widget, text):

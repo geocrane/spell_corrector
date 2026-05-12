@@ -14,6 +14,8 @@ Engine — бизнес-логика приложения.
     engine.set_config(key, value)
     engine.cancel()
     engine.navigate_to_sentence(sentence)
+    engine.navigate_to_word_correction(correction)
+    engine.set_word_revisions_mode(on)
 
 События (генерирует Engine, подписывается UI):
     documents_found(documents)
@@ -23,11 +25,16 @@ Engine — бизнес-логика приложения.
     sentence_checked(index, original, corrected, has_error)
     check_complete()
     check_error(error)
+    word_corrections_changed()
+    revisions_mode_changed(on)
+    navigation_blocked(message)
+    format_state_changed(attr, is_active, invalidated=False)
 """
 
 import logging
 import os
 import threading
+from typing import Optional
 
 import office_finder
 # spell_checker импортируется лениво в _run_check() и get_available_adapters()
@@ -88,6 +95,24 @@ class Engine:
         self.is_checking = False
         self.sentences = []
         self.check_results = {}
+        # Плоский список применённых пословных правок (см. core.word_corrections).
+        self.word_corrections: list = []
+        # Включён ли режим Track Changes в Word (влияет на способ применения правок).
+        self.revisions_mode: bool = False
+        # Состояние унификации форматирования для текущего документа.
+        # is_active=True означает, что унификация применена и доступен откат.
+        self.format_state: dict = self._make_default_format_state()
+        # Кэш analyze_format для текущего документа — заполняется лениво при
+        # первом toggle_unify_*. Инвалидируется при правках текста.
+        self.format_stats_cache: Optional[dict] = None
+
+    @staticmethod
+    def _make_default_format_state() -> dict:
+        return {
+            "font_name": {"is_active": False, "descriptor": None},
+            "font_size": {"is_active": False, "descriptor": None},
+            "style":     {"is_active": False, "descriptor": None},
+        }
 
     # ─── Поиск документов ───────────────────────────────────────────────
 
@@ -98,8 +123,12 @@ class Engine:
         self.doc_state.clear()
         self.check_results = {}
         self.sentences = []
+        self.word_corrections = []
+        self.revisions_mode = False
         self.is_checking = False
         self.selected_doc = None
+        self.format_state = self._make_default_format_state()
+        self.format_stats_cache = None
 
         self.documents = office_finder.find_all_documents()
 
@@ -119,18 +148,40 @@ class Engine:
         if self.selected_doc is not None:
             self.doc_state.save(
                 id(self.selected_doc), self.check_results, self.sentences,
+                word_corrections=self.word_corrections,
+                revisions_mode=self.revisions_mode,
+                format_state=self.format_state,
             )
 
         cached = self.doc_state.load(id(doc))
         if cached:
             self.check_results = cached["check_results"].copy()
             self.sentences = cached["sentences"].copy()
+            self.word_corrections = list(cached.get("word_corrections", []))
+            self.revisions_mode = bool(cached.get("revisions_mode", False))
+            cached_fmt = cached.get("format_state") or {}
+            self.format_state = self._merge_format_state(cached_fmt)
         else:
             self.check_results = {}
             self.sentences = []
+            self.word_corrections = []
+            self.revisions_mode = False
+            self.format_state = self._make_default_format_state()
 
+        # stats_cache не персистим: он специфичен документу и пересчитывается дёшево.
+        self.format_stats_cache = None
         self.is_checking = False
         self.selected_doc = doc
+
+    def _merge_format_state(self, cached: dict) -> dict:
+        """Сшить дефолтную структуру с тем, что лежит в кэше."""
+        state = self._make_default_format_state()
+        for attr, defaults in state.items():
+            entry = cached.get(attr)
+            if isinstance(entry, dict):
+                defaults["is_active"] = bool(entry.get("is_active", False))
+                defaults["descriptor"] = entry.get("descriptor")
+        return state
 
     # ─── Проверка документа ─────────────────────────────────────────────
 
@@ -151,6 +202,11 @@ class Engine:
             return
 
         self.is_checking = True
+        # Сброс пословных правок перед новой проверкой — старые карточки
+        # из прошлого прогона уже неактуальны (позиции могут сдвинуться).
+        if self.word_corrections:
+            self.word_corrections = []
+            self.events.emit("word_corrections_changed")
         # Мгновенно переключаем UI
         self.events.emit("extraction_started")
 
@@ -198,6 +254,8 @@ class Engine:
         self.sentences = sentences
         self.doc_state.cancel()
         self.check_results = {}
+        self.word_corrections = []
+        self.events.emit("word_corrections_changed")
 
         gen = self.doc_state.next_generation()
         total = len(sentences)
@@ -235,6 +293,11 @@ class Engine:
     def revert_correction(self, index):
         """Откатить исправление.
 
+        Откат, как и применение, выполняется с TrackRevisions=True — в Word
+        появляется дополнительная ревизия-об-отмене. История изменений
+        сохраняется. Поиск конкретной существующей Revision и её Reject не
+        реализован — это хрупко и не требуется.
+
         Args:
             index: Индекс предложения.
 
@@ -245,6 +308,10 @@ class Engine:
 
     def _apply_correction_to_doc(self, index, apply):
         """Заменить текст предложения на исправленный или оригинальный.
+
+        Применение и откат ВСЕГДА выполняются с TrackRevisions=True, чтобы в
+        Word накапливалась история изменений. Видимость этих ревизий
+        управляется отдельно через set_word_revisions_mode (отображение).
 
         Args:
             index: Индекс предложения.
@@ -267,21 +334,83 @@ class Engine:
             else:
                 new_text, old_text = original, corrected
 
-            ok = office_finder.replace_sentence_text(
+            replace_result = office_finder.replace_sentence_text_with_corrections(
                 self.selected_doc, sentence, new_text,
                 old_text=old_text, all_sentences=self.sentences,
+                track_revisions=True,
             )
+            ok = replace_result["ok"]
 
             if ok:
                 result["state"] = "applied" if apply else "pending"
+
+                old_end = replace_result.get("old_end", 0)
+                delta = replace_result.get("delta", 0)
+
+                scope = None
+                if self.selected_doc and self.selected_doc.get("type") == "excel":
+                    scope = {
+                        "excel_workbook": sentence.get("workbook"),
+                        "excel_sheet": sentence.get("sheet"),
+                        "excel_cell_address": sentence.get("cell_address"),
+                    }
+
+                if apply:
+                    self._shift_word_corrections(old_end, delta, scope=scope)
+                    new_corrs = replace_result.get("corrections", []) or []
+                    for c in new_corrs:
+                        c["sentence_index"] = index
+                    self.word_corrections.extend(new_corrs)
+                else:
+                    self.word_corrections = [
+                        c for c in self.word_corrections
+                        if c.get("sentence_index") != index
+                    ]
+                    self._shift_word_corrections(old_end, delta, scope=scope)
+
+                self.events.emit("word_corrections_changed")
+                # Любое изменение текста инвалидирует все формат-снимки —
+                # позиции сегментов в snapshot.ranges больше не валидны.
+                self._invalidate_format_snapshots()
 
             return ok
         except Exception as e:
             logger.error("Ошибка применения/отката #%d: %s", index, e)
             return False
 
+    def _shift_word_corrections(self, old_end: int, delta: int, scope: dict | None = None) -> None:
+        """Сдвинуть позиции уже сохранённых пословных правок после замены текста.
+
+        Аналогично _after_replacement, но для записей в self.word_corrections.
+        Если правка начиналась после old_end — сдвинуть её на delta.
+
+        Args:
+            old_end: Позиция конца изменённого фрагмента (до замены).
+            delta:   Разница длин (len(new) - len(old)).
+            scope:   Если задан — сдвигаются только правки, у которых все
+                     ключи scope совпадают с правкой (нужно для Excel:
+                     позиции — внутри ячейки, сдвиг только в той же ячейке).
+        """
+        if delta == 0:
+            return
+        for c in self.word_corrections:
+            if scope is not None and not all(c.get(k) == v for k, v in scope.items()):
+                continue
+            start = c.get("word_range_start")
+            if start is not None and start >= old_end:
+                c["word_range_start"] = start + delta
+                c["word_range_end"] = c.get("word_range_end", start) + delta
+                if "excel_char_start" in c:
+                    c["excel_char_start"] = c["word_range_start"]
+                    c["excel_char_end"] = c["word_range_end"]
+
     def toggle_skip(self, index):
         """Переключить состояние пропуска предложения.
+
+        Если предложение было в состоянии "applied" — карточки его пословных правок
+        удаляются из self.word_corrections (текст в документе при этом НЕ откатывается,
+        это ответственность вызывающего кода — обычно UI вызывает revert до toggle_skip,
+        либо переход "applied → skipped" не предусмотрен в UI).
 
         Args:
             index: Индекс предложения.
@@ -296,10 +425,22 @@ class Engine:
         current = result.get("state", "pending")
         if current == "pending":
             result["state"] = "skipped"
-            return "skipped"
+            new_state = "skipped"
         else:
             result["state"] = "pending"
-            return "pending"
+            new_state = "pending"
+
+        # При любом переходе убираем карточки этого предложения из режима ошибок:
+        # карточки показывают только state="applied", чего после toggle_skip заведомо нет.
+        before = len(self.word_corrections)
+        self.word_corrections = [
+            c for c in self.word_corrections
+            if c.get("sentence_index") != index
+        ]
+        if len(self.word_corrections) != before:
+            self.events.emit("word_corrections_changed")
+
+        return new_state
 
     # ─── Навигация ──────────────────────────────────────────────────────
 
@@ -312,9 +453,54 @@ class Engine:
         Returns:
             bool: True если выделение успешно.
         """
-        if self.selected_doc:
-            return office_finder.navigate_to_sentence(self.selected_doc, sentence)
-        return False
+        if not self.selected_doc:
+            return False
+        ok = office_finder.navigate_to_sentence(self.selected_doc, sentence)
+        if not ok:
+            err = office_finder.get_last_provider_error(self.selected_doc)
+            if err:
+                self.events.emit("navigation_blocked", message=err)
+        return ok
+
+    def navigate_to_word_correction(self, correction: dict) -> bool:
+        """Выделить диапазон конкретной пословной правки в документе.
+
+        Args:
+            correction: WordCorrection-словарь.
+
+        Returns:
+            bool: True если выделение успешно.
+        """
+        if not self.selected_doc:
+            return False
+        ok = office_finder.navigate_to_correction(self.selected_doc, correction)
+        if not ok:
+            err = office_finder.get_last_provider_error(self.selected_doc)
+            if err:
+                self.events.emit("navigation_blocked", message=err)
+        return ok
+
+    def set_word_revisions_mode(self, on: bool) -> bool:
+        """Включить/выключить ОТОБРАЖЕНИЕ ревизий в Word.
+
+        Запись ревизий (TrackRevisions) выполняется автоматически при каждом
+        apply_correction/revert_correction. Здесь управляется только видимость
+        накопленных ревизий: при on=True Word показывает All Markup, при
+        on=False — Final (как обычный текст).
+
+        Args:
+            on: True — включить отображение, False — выключить.
+
+        Returns:
+            bool: True если успешно.
+        """
+        if not self.selected_doc:
+            return False
+        ok = office_finder.set_revisions_mode(self.selected_doc, on)
+        if ok:
+            self.revisions_mode = bool(on)
+            self.events.emit("revisions_mode_changed", on=self.revisions_mode)
+        return ok
 
     # ─── Конфигурация ───────────────────────────────────────────────────
 
@@ -340,6 +526,104 @@ class Engine:
         """Установить адаптер по умолчанию."""
         self.config["default_adapter"] = name
         save_config(self.config)
+
+    # ─── Унификация форматирования ──────────────────────────────────────
+
+    def toggle_unify_font(self) -> None:
+        """Toggle унификации шрифта (font_name)."""
+        self._toggle_unify("font_name")
+
+    def toggle_unify_size(self) -> None:
+        """Toggle унификации размера (font_size)."""
+        self._toggle_unify("font_size")
+
+    def toggle_unify_style(self) -> None:
+        """Toggle унификации стиля (bold/italic)."""
+        self._toggle_unify("style")
+
+    def toggle_unify_all(self) -> None:
+        """«Применить всё» / «Откатить всё».
+
+        Если хоть одна унификация активна — откатываем все три в обратном
+        порядке. Иначе — применяем все три подряд (font → size → style).
+        """
+        if not self.selected_doc:
+            return
+        any_active = any(st["is_active"] for st in self.format_state.values())
+        if any_active:
+            for attr in ("style", "font_size", "font_name"):
+                if self.format_state[attr]["is_active"]:
+                    self._toggle_unify(attr)
+        else:
+            for attr in ("font_name", "font_size", "style"):
+                if not self.format_state[attr]["is_active"]:
+                    self._toggle_unify(attr)
+
+    def _toggle_unify(self, attr: str) -> None:
+        if not self.selected_doc:
+            return
+        if attr not in self.format_state:
+            return
+
+        st = self.format_state[attr]
+        if st["is_active"] and st["descriptor"]:
+            ok = office_finder.restore_format(self.selected_doc, st["descriptor"])
+            st["is_active"] = False
+            st["descriptor"] = None
+            # Невалидный snapshot (документ менялся) — это не ошибка для UX:
+            # просто сообщим UI, что переход в «выкл» не сопровождался откатом.
+            self.events.emit(
+                "format_state_changed",
+                attr=attr, is_active=False, invalidated=(not ok),
+            )
+            return
+
+        # Применить унификацию.
+        if self.format_stats_cache is None:
+            try:
+                self.format_stats_cache = office_finder.analyze_format(self.selected_doc)
+            except Exception as e:
+                logger.error("toggle_unify: analyze_format error: %s", e)
+                self.format_stats_cache = None
+        if not self.format_stats_cache:
+            self.events.emit("format_state_changed", attr=attr, is_active=False)
+            return
+
+        target_key = "dominant_style" if attr == "style" else f"dominant_{attr}"
+        target = self.format_stats_cache.get(target_key)
+        if target is None:
+            self.events.emit("format_state_changed", attr=attr, is_active=False)
+            return
+
+        try:
+            descriptor = office_finder.apply_format_uniform(
+                self.selected_doc, attr, target,
+            )
+        except Exception as e:
+            logger.error("toggle_unify: apply_format_uniform error: %s", e)
+            descriptor = None
+
+        if descriptor:
+            st["is_active"] = True
+            st["descriptor"] = descriptor
+        self.events.emit("format_state_changed", attr=attr, is_active=st["is_active"])
+
+    def _invalidate_format_snapshots(self) -> None:
+        """Сбросить все формат-снимки (после правки текста документа).
+
+        Снапшоты хранят (start, end)-позиции, которые сместились — попытка
+        восстановить такой snapshot повредила бы текст. Кнопки в UI переходят
+        в «выкл» с пометкой invalidated.
+        """
+        self.format_stats_cache = None
+        for attr, st in self.format_state.items():
+            if st["is_active"] or st["descriptor"]:
+                st["is_active"] = False
+                st["descriptor"] = None
+                self.events.emit(
+                    "format_state_changed",
+                    attr=attr, is_active=False, invalidated=True,
+                )
 
     # ─── Отмена ─────────────────────────────────────────────────────────
 

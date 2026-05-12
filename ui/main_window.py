@@ -22,6 +22,9 @@ from ui.tiles import (
     highlight_selected_sentence_tile,
     create_sentence_tile_checking,
     create_checked_sentence_tile,
+    create_word_correction_tile,
+    set_toggle_button_mixed,
+    set_toggle_button_state,
     update_sentence_tile,
 )
 
@@ -80,6 +83,8 @@ class MainWindow(tk.Tk):
         self.spinner_job = None
         self.doc_status_label = None
         self._extraction_in_progress = False  # блокировка «Назад» во время извлечения
+        self.errors_tiles = []  # [(correction, tile_frame), ...] для режима ошибок
+        self.revisions_mode_var = tk.BooleanVar(value=False)
 
         # Конфигурация
         self._config = engine.get_config()
@@ -87,6 +92,7 @@ class MainWindow(tk.Tk):
 
         self._create_ui()
         self._subscribe_to_engine()
+        self._refresh_format_unify_panel()
 
         # Предзагрузка модели в фоне — через 200мс после появления окна
         self.after(200, self._preload_model_in_background)
@@ -104,6 +110,10 @@ class MainWindow(tk.Tk):
         ev.subscribe("sentence_checked", self._on_sentence_checked)
         ev.subscribe("check_complete", self._on_check_complete)
         ev.subscribe("check_error", self._on_check_error)
+        ev.subscribe("word_corrections_changed", self._on_word_corrections_changed)
+        ev.subscribe("revisions_mode_changed", self._on_revisions_mode_changed)
+        ev.subscribe("navigation_blocked", self._on_navigation_blocked)
+        ev.subscribe("format_state_changed", self._on_format_state_changed)
 
     # ─── Предзагрузка модели ────────────────────────────────────────────
 
@@ -231,6 +241,9 @@ class MainWindow(tk.Tk):
 
         self.after(0, _update)
 
+    def _on_navigation_blocked(self, message):
+        self.after(0, lambda: self.status_label.config(text=message))
+
     # ─── Позиционирование ───────────────────────────────────────────────
 
     def _position_on_active_monitor(self):
@@ -313,7 +326,36 @@ class MainWindow(tk.Tk):
         )
         self.skip_tables_check.pack(side=tk.LEFT, padx=(10, 0))
 
-        # Фрейм скрытия чистых предложений
+        # Панель унификации форматирования: видна всегда в режиме «documents».
+        # Кнопки disabled пока документ не выбран.
+        self.format_unify_frame = ttk.Frame(self.toolbar)
+        self.format_unify_frame.pack(fill=tk.X, pady=(5, 0))
+        self.format_buttons: dict[str, tk.Button] = {}
+        for label, attr in (("Шрифт", "font_name"),
+                            ("Размер", "font_size"),
+                            ("Стиль", "style")):
+            btn = tk.Button(
+                self.format_unify_frame, text=label,
+                command=lambda a=attr: self._on_format_toggle(a),
+                relief="flat", borderwidth=1, padx=8, pady=3,
+                font=("Segoe UI", 9), cursor="hand2", width=8,
+                disabledforeground="#999999",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 4))
+            set_toggle_button_state(btn, False)
+            self.format_buttons[attr] = btn
+
+        self.format_all_btn = tk.Button(
+            self.format_unify_frame, text="Применить всё",
+            command=self._on_format_toggle_all,
+            relief="flat", borderwidth=1, padx=10, pady=3,
+            font=("Segoe UI", 9), cursor="hand2",
+            disabledforeground="#999999",
+        )
+        self.format_all_btn.pack(side=tk.LEFT, padx=(8, 0))
+        set_toggle_button_state(self.format_all_btn, False)
+
+        # Фрейм скрытия чистых предложений + кнопка перехода в режим ошибок
         self.toggle_frame = ttk.Frame(self.toolbar)
 
         self.hide_clean_var = tk.BooleanVar(
@@ -324,6 +366,25 @@ class MainWindow(tk.Tk):
             variable=self.hide_clean_var, command=self._on_toggle_hide_clean,
         )
         self.hide_clean_check.pack(side=tk.LEFT)
+
+        self.errors_mode_button = tk.Button(
+            self.toggle_frame, text="Режим ошибок",
+            command=self._toggle_errors_view,
+            bg="#dc3545", fg="white",
+            activebackground="#b02a37", activeforeground="white",
+            relief="flat", borderwidth=0, padx=8, pady=2,
+            font=("Segoe UI", 9), cursor="hand2",
+        )
+        self.errors_mode_button.pack(side=tk.RIGHT, padx=(5, 0))
+
+        # Фрейм опций режима ошибок (виден только при current_view == "errors")
+        self.errors_options_frame = ttk.Frame(self.toolbar)
+        self.revisions_check = ttk.Checkbutton(
+            self.errors_options_frame, text="Режим ревизий Word",
+            variable=self.revisions_mode_var,
+            command=self._on_toggle_revisions_mode,
+        )
+        self.revisions_check.pack(side=tk.LEFT)
 
         # Фрейм выбора адаптера
         self.adapter_frame = ttk.Frame(self)
@@ -390,7 +451,9 @@ class MainWindow(tk.Tk):
         self.toolbar_separator.pack_forget()
         self.check_frame.pack_forget()
         self.doc_options_frame.pack_forget()
+        self.format_unify_frame.pack_forget()
         self.toggle_frame.pack_forget()
+        self.errors_options_frame.pack_forget()
 
         if self.current_view == "documents":
             self.find_button.config(
@@ -401,7 +464,19 @@ class MainWindow(tk.Tk):
             self.toolbar_separator.pack(fill=tk.X, pady=5)
             self.check_frame.pack(fill=tk.X)
             self.doc_options_frame.pack(fill=tk.X, pady=(5, 0))
+            self.format_unify_frame.pack(fill=tk.X, pady=(5, 0))
             self._refresh_check_buttons()
+            self._refresh_doc_dependent_options()
+            self._refresh_format_unify_panel()
+        elif self.current_view == "errors":
+            self.find_button.config(
+                text="  \u25c2  Назад  ",
+                command=self._exit_errors_view,
+                bg="#5B6770", fg="white",
+                activebackground="#5B6770", activeforeground="white", cursor="hand2",
+            )
+            self._set_button_hover(self.find_button, "#5B6770", "#4A545C")
+            self.errors_options_frame.pack(fill=tk.X, pady=(5, 0))
         else:
             extracting = self._extraction_in_progress
             bg = "#5B6770" if not extracting else "#888888"
@@ -415,6 +490,7 @@ class MainWindow(tk.Tk):
             if not extracting:
                 self._set_button_hover(self.find_button, "#5B6770", "#4A545C")
             self.toggle_frame.pack(fill=tk.X, pady=(5, 0))
+            self._refresh_errors_mode_button()
 
     def _refresh_check_buttons(self):
         """Обновить состояние кнопок проверки (активна/неактивна)."""
@@ -430,6 +506,102 @@ class MainWindow(tk.Tk):
             bg=bg, fg=fg, activebackground=bg, activeforeground=fg, cursor=cur,
             text="  \u2702  Проверяю...  " if self.engine.is_checking else "  \u2702  Проверить выделенное  ",
         )
+
+    def _refresh_format_unify_panel(self):
+        """Синхронизировать состояния и доступность кнопок унификации.
+
+        Сама панель видна всегда в режиме «documents» (упаковывается в
+        _update_button_state). Здесь только красим toggle-состояние из
+        engine.format_state и enable/disable по наличию выбранного документа.
+        """
+        has_doc = self.engine.selected_doc is not None
+        state = "normal" if has_doc else "disabled"
+        cursor = "hand2" if has_doc else "arrow"
+        for attr, btn in self.format_buttons.items():
+            st = self.engine.format_state.get(attr, {})
+            set_toggle_button_state(btn, bool(st.get("is_active")))
+            btn.config(state=state, cursor=cursor)
+        self._refresh_format_all_btn()
+        self.format_all_btn.config(state=state, cursor=cursor)
+
+    def _refresh_format_all_btn(self):
+        """Обновить вид общей кнопки «Применить всё»: зелёный/синий/серый."""
+        states = [st.get("is_active") for st in self.engine.format_state.values()]
+        if states and all(states):
+            set_toggle_button_state(self.format_all_btn, True)
+        elif not any(states):
+            set_toggle_button_state(self.format_all_btn, False)
+        else:
+            set_toggle_button_mixed(self.format_all_btn)
+
+    def _on_format_toggle(self, attr: str):
+        """Клик по одной из кнопок Шрифт/Размер/Стиль."""
+        if not self.engine.selected_doc:
+            return
+        method = {
+            "font_name": self.engine.toggle_unify_font,
+            "font_size": self.engine.toggle_unify_size,
+            "style":     self.engine.toggle_unify_style,
+        }.get(attr)
+        if method is None:
+            return
+        btn = self.format_buttons.get(attr)
+        if btn:
+            btn.config(state="disabled", cursor="watch")
+        self.status_label.config(text="⏳ Унификация форматирования...")
+        self.update_idletasks()
+        try:
+            method()
+        finally:
+            if btn:
+                btn.config(state="normal", cursor="hand2")
+
+    def _on_format_toggle_all(self):
+        """Клик по «Применить всё»."""
+        if not self.engine.selected_doc:
+            return
+        self.format_all_btn.config(state="disabled", cursor="watch")
+        for btn in self.format_buttons.values():
+            btn.config(state="disabled", cursor="watch")
+        self.status_label.config(text="⏳ Унификация форматирования...")
+        self.update_idletasks()
+        try:
+            self.engine.toggle_unify_all()
+        finally:
+            self.format_all_btn.config(state="normal", cursor="hand2")
+            for btn in self.format_buttons.values():
+                btn.config(state="normal", cursor="hand2")
+
+    def _on_format_state_changed(self, attr, is_active, invalidated=False):
+        def _update():
+            btn = self.format_buttons.get(attr)
+            if btn:
+                set_toggle_button_state(btn, is_active)
+            self._refresh_format_all_btn()
+            if invalidated:
+                self.status_label.config(
+                    text="Документ изменился — снимок формата сброшен",
+                )
+            else:
+                self._update_status_text()
+        self.after(0, _update)
+
+    def _refresh_doc_dependent_options(self):
+        """Заблокировать/разблокировать опции по типу выбранного документа.
+
+        Excel не поддерживает skip_tables (он сам — таблица) и Track Changes.
+        """
+        doc = self.engine.selected_doc
+        is_excel = doc is not None and doc.get("type") == "excel"
+        state = "disabled" if is_excel else "normal"
+        try:
+            self.skip_tables_check.config(state=state)
+        except tk.TclError:
+            pass
+        try:
+            self.revisions_check.config(state=state)
+        except tk.TclError:
+            pass
 
     # ─── Callback'и настроек ────────────────────────────────────────────
 
@@ -463,6 +635,9 @@ class MainWindow(tk.Tk):
 
     def show_documents_view(self):
         """Вернуться к списку документов."""
+        if self.engine.revisions_mode:
+            self.engine.set_word_revisions_mode(False)
+            self.revisions_mode_var.set(False)
         self._stop_spinner()
         self._extraction_in_progress = False
         self.current_view = "documents"
@@ -509,6 +684,8 @@ class MainWindow(tk.Tk):
         for doc in documents:
             self._create_document_tile_ui(doc)
 
+        self._refresh_format_unify_panel()
+
         # Динамический статус-бар по зарегистрированным провайдерам
         counts = {}
         for provider in get_all_providers():
@@ -550,6 +727,8 @@ class MainWindow(tk.Tk):
 
         self.engine.select_document(doc)
         self._refresh_check_buttons()
+        self._refresh_doc_dependent_options()
+        self._refresh_format_unify_panel()
         self._highlight_selected_tile_ui()
 
         app_width = 350
@@ -849,6 +1028,111 @@ class MainWindow(tk.Tk):
             buttons["skip"].config(text="Пропустить", bg="#6c757d")
             if "index_label" in buttons:
                 buttons["index_label"].config(bg="#666666")
+
+    # ─── Режим ошибок ───────────────────────────────────────────────────
+
+    def _refresh_errors_mode_button(self):
+        """Включить/отключить кнопку «Режим ошибок» по наличию правок."""
+        has_corrs = len(self.engine.word_corrections) > 0
+        if has_corrs:
+            self.errors_mode_button.config(
+                state="normal", bg="#dc3545", fg="white", cursor="hand2",
+            )
+        else:
+            self.errors_mode_button.config(
+                state="disabled", bg="#aaaaaa", fg="#666666", cursor="arrow",
+            )
+
+    def _toggle_errors_view(self):
+        """Переключение sentences ↔ errors."""
+        if self.current_view == "sentences":
+            if not self.engine.word_corrections:
+                return
+            self._show_errors_view()
+        elif self.current_view == "errors":
+            self._show_sentences_from_cache()
+
+    def _show_errors_view(self):
+        """Отрисовать плитки пословных правок.
+
+        При входе автоматически включается отображение ревизий в Word
+        (запись ревизий уже выполняется при каждом Apply).
+        """
+        self.current_view = "errors"
+        self.selected_sentence_index = None
+
+        # Включить отображение ревизий в Word и синхронизировать галочку.
+        # Для Excel пропускаем — Track Changes там нет.
+        doc = self.engine.selected_doc or {}
+        if doc.get("type") != "excel" and not self.engine.revisions_mode:
+            self.engine.set_word_revisions_mode(True)
+        self.revisions_mode_var.set(self.engine.revisions_mode)
+        self._update_button_state()
+        self._refresh_doc_dependent_options()
+
+        for widget in self.docs_frame.winfo_children():
+            widget.destroy()
+        self.canvas.yview_moveto(0)
+        self.errors_tiles = []
+
+        corrs = self.engine.word_corrections
+        if not corrs:
+            placeholder = tk.Label(
+                self.docs_frame, text="Нет применённых правок",
+                fg="#999", bg="#f0f0f0",
+            )
+            placeholder.pack(pady=20)
+        else:
+            for corr in corrs:
+                tile = create_word_correction_tile(
+                    self.docs_frame, corr, self._on_word_correction_click,
+                )
+                self.errors_tiles.append((corr, tile))
+
+        self.status_label.config(text=f"Применено правок: {len(corrs)}")
+
+    def _exit_errors_view(self):
+        """Кнопка «Назад» в режиме ошибок — выключить ревизии, вернуться к sentences."""
+        if self.engine.revisions_mode:
+            self.engine.set_word_revisions_mode(False)
+            self.revisions_mode_var.set(False)
+        self._show_sentences_from_cache()
+
+    def _on_word_correction_click(self, correction):
+        """Клик по плитке правки — выделить диапазон в Word и активировать окно."""
+        ok = self.engine.navigate_to_word_correction(correction)
+        if not ok:
+            self.status_label.config(text="⚠ Не удалось найти правку в документе")
+            return
+
+        app_width = 350
+        target_rect = (
+            self.monitor["x"],
+            self.monitor["y"],
+            self.monitor["width"] - app_width,
+            self.monitor["height"],
+        )
+        office_finder.activate_document(self.engine.selected_doc, target_rect)
+
+    def _on_toggle_revisions_mode(self):
+        on = bool(self.revisions_mode_var.get())
+        ok = self.engine.set_word_revisions_mode(on)
+        if not ok:
+            self.revisions_mode_var.set(not on)
+            self.status_label.config(text="⚠ Не удалось переключить режим ревизий")
+
+    def _on_word_corrections_changed(self):
+        def _update():
+            if self.current_view == "errors":
+                self._show_errors_view()
+            elif self.current_view == "sentences":
+                self._refresh_errors_mode_button()
+        self.after(0, _update)
+
+    def _on_revisions_mode_changed(self, on):
+        def _update():
+            self.revisions_mode_var.set(bool(on))
+        self.after(0, _update)
 
     # ─── Поднять окно ───────────────────────────────────────────────────
 
