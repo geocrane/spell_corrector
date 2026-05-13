@@ -284,9 +284,10 @@ class MainWindow(tk.Tk):
             icon_key="back",
             text="Назад",
             command=self.show_documents_view,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
             style="default",
+            compact=True,
         )
 
         # Вертикальный сепаратор между «Найти» и группой проверки (только documents)
@@ -401,9 +402,9 @@ class MainWindow(tk.Tk):
             icon_key="hide_clean",
             text="Скрыть",
             command=self._on_toggle_hide_clean,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
-            compact=False,
+            compact=True,
             initial_state="on" if self.hide_clean_var.get() else "off",
         )
 
@@ -412,9 +413,10 @@ class MainWindow(tk.Tk):
             icon_key="errors_mode",
             text="Исправления",
             command=self._toggle_errors_view,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
             style="danger",
+            compact=True,
         )
 
         # Word ревизии — только errors
@@ -423,9 +425,9 @@ class MainWindow(tk.Tk):
             icon_key="revisions",
             text="Word ревизии",
             command=self._on_toggle_revisions_mode,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
-            compact=False,
+            compact=True,
             initial_state="on" if self.revisions_mode_var.get() else "off",
         )
 

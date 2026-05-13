@@ -59,8 +59,8 @@ def _resolve_parent_bg(parent) -> str:
         pass
     # ttk.Frame — берём из стиля
     try:
-        style = ttk.Style(parent)
-        bg = style.lookup("TFrame", "background")
+        style_obj = ttk.Style(parent)
+        bg = style_obj.lookup("TFrame", "background")
         if bg:
             return bg
     except Exception:
@@ -68,8 +68,38 @@ def _resolve_parent_bg(parent) -> str:
     return RIBBON_BG
 
 
-class _RibbonBase(tk.Frame):
-    """Общая основа для RibbonButton и RibbonToggle."""
+def _draw_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+    """Рисует скругленный прямоугольник на Canvas."""
+    # Для Tkinter polygon скругление работает через дублирование точек и smooth=True
+    points = [
+        x1 + radius, y1,
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1 + radius,
+        x1, y1,
+    ]
+    return canvas.create_polygon(points, **kwargs, smooth=True)
+
+
+class _RibbonBase(tk.Canvas):
+    """Общая основа для RibbonButton и RibbonToggle.
+    Использует Canvas для поддержки скругленных углов.
+    """
 
     def __init__(
         self,
@@ -86,9 +116,7 @@ class _RibbonBase(tk.Frame):
         super().__init__(
             parent,
             bd=0,
-            highlightthickness=1,
-            highlightbackground=self._parent_bg,
-            highlightcolor=self._parent_bg,
+            highlightthickness=0,
             bg=self._parent_bg,
         )
         self._icon_key = icon_key
@@ -103,6 +131,8 @@ class _RibbonBase(tk.Frame):
         self._outer_padx = style.get("ribbon", config_key, "outer_padx")
         self._outer_pady = style.get("ribbon", config_key, "outer_pady")
         self._gap = style.get("ribbon", config_key, "gap")
+        self._min_height = style.get("ribbon", config_key, "min_height", default=0) or 0
+        self._radius = style.get("ribbon", "border_radius")
 
         if compact:
             self._font = RIBBON_FONT_SM
@@ -119,12 +149,15 @@ class _RibbonBase(tk.Frame):
         self._bind_events()
         self._apply_visual()  # переопределяется в наследниках
 
+        # Авто-размер канваса под контент (inner)
+        self.bind("<Configure>", self._on_canvas_resize)
+
     # ─── UI ─────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Внутренняя обёртка для padding
+        # Внутренняя обёртка для padding. Сама она "прозрачна" в плане цвета,
+        # так как мы будем менять её BG синхронно с заливкой канваса.
         self._inner = tk.Frame(self, bd=0, bg=self._parent_bg)
-        self._inner.pack(padx=self._outer_padx, pady=self._outer_pady)
 
         # Иконка
         photo = icons.get_icon(self._icon_key, self._icon_size)
@@ -164,6 +197,50 @@ class _RibbonBase(tk.Frame):
             self._icon_label.pack(side=tk.LEFT)
             self._text_label.pack(side=tk.LEFT, padx=(self._gap * 2, 0))
 
+        # Размещаем inner в центре Canvas через create_window.
+        # Это позволяет рисовать фон за виджетами.
+        self._inner_window = self.create_window(
+            0, 0, window=self._inner, anchor="nw"
+        )
+
+    def _on_canvas_resize(self, _event=None):
+        # Подогнать размер Canvas под inner + padding.
+        # Для compact-кнопок применяем min_height — чтобы кнопки в одной
+        # группе имели одинаковую высоту независимо от пропорций иконок.
+        inner_w = self._inner.winfo_reqwidth()
+        inner_h = self._inner.winfo_reqheight()
+        w = inner_w + self._outer_padx * 2
+        h = max(inner_h + self._outer_pady * 2, self._min_height)
+        self.config(width=w, height=h)
+        # Центрируем inner по вертикали и горизонтали
+        x = (w - inner_w) // 2
+        y = (h - inner_h) // 2
+        self.coords(self._inner_window, x, y)
+        # _redraw будет вызван из _apply_visual
+
+    def _redraw(self, bg=None, border=None):
+        """Перерисовать скругленный фон."""
+        if bg is None:
+            bg = self._parent_bg
+        if border is None:
+            border = self._parent_bg
+
+        self.delete("bg_shape")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w < 2 or h < 2:
+            return
+
+        _draw_rounded_rect(
+            self, 1, 1, w - 1, h - 1,
+            radius=self._radius,
+            fill=bg,
+            outline=border,
+            width=1,
+            tags="bg_shape"
+        )
+        self.tag_lower("bg_shape")
+
     def _all_subwidgets(self):
         return (self, self._inner, self._icon_label, self._text_label)
 
@@ -177,7 +254,9 @@ class _RibbonBase(tk.Frame):
     # ─── Перекраска ────────────────────────────────────────────────────
 
     def _paint(self, bg: str, fg: str, border: str):
-        for w in self._all_subwidgets():
+        # Самим виджетам (Labels, Inner Frame) ставим сплошной BG,
+        # чтобы они не "просвечивали" старым цветом поверх Canvas.
+        for w in (self._inner, self._icon_label, self._text_label):
             try:
                 w.config(bg=bg)
             except tk.TclError:
@@ -190,10 +269,9 @@ class _RibbonBase(tk.Frame):
             self._text_label.config(fg=fg)
         except tk.TclError:
             pass
-        try:
-            self.config(highlightbackground=border, highlightcolor=border)
-        except tk.TclError:
-            pass
+        
+        # Рисуем скругленный фон на самом Canvas
+        self._redraw(bg=bg, border=border)
 
     def _apply_visual(self):
         """Реализуется в наследниках — выбирает текущую палитру по состоянию."""

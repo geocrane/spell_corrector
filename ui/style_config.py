@@ -48,12 +48,14 @@ _DEFAULT_STYLE = {
         "compact": {
             "outer_padx": 4,
             "outer_pady": 3,
-            "gap": 2
+            "gap": 2,
+            "min_height": 50
         },
         "normal": {
             "outer_padx": 8,
             "outer_pady": 4,
-            "gap": 3
+            "gap": 3,
+            "min_height": 100
         },
         "border_radius": 0
     }

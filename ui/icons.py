@@ -123,6 +123,14 @@ def get_icon(key: str, size: int = ICON_LG, state: str = "normal") -> Optional["
             alpha = alpha.point(lambda p: int(p * 0.5))
             img.putalpha(alpha)
 
+        # Унифицируем габариты: паддим до квадрата size×size прозрачным фоном,
+        # чтобы PNG с разной внутренней пропорцией давали одинаковую "коробку".
+        if img.size != (size, size):
+            canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            offset = ((size - img.size[0]) // 2, (size - img.size[1]) // 2)
+            canvas.paste(img, offset, img)
+            img = canvas
+
         photo = ImageTk.PhotoImage(img)
         _CACHE[cache_key] = photo
         return photo
