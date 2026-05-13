@@ -1,6 +1,6 @@
 {
   "default_adapter": "lora_adapter_v2.1",
-  "hide_clean_sentences": false,
+  "hide_clean_sentences": true,
   "strict_protection": true,
   "auditor_format": true,
   "skip_tables": false,
