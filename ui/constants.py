@@ -1,14 +1,16 @@
 """
 Константы для UI: цвета diff, пунктуация, анимация спиннера, палитра Ribbon.
+Все визуальные параметры теперь загружаются из ui_style.json через style_config.
 """
 
 import os
+from ui.style_config import style
 
 # Цвета для diff
-DIFF_ADDED_BG = "#d4edda"
-DIFF_ADDED_FG = "#155724"
-DIFF_REMOVED_BG = "#f8d7da"
-DIFF_REMOVED_FG = "#721c24"
+DIFF_ADDED_BG = style.get("colors", "diff_added_bg")
+DIFF_ADDED_FG = style.get("colors", "diff_added_fg")
+DIFF_REMOVED_BG = style.get("colors", "diff_removed_bg")
+DIFF_REMOVED_FG = style.get("colors", "diff_removed_fg")
 
 # Пунктуация (без зачёркивания при удалении)
 PUNCTUATION = set('.,;:!?-—–()[]{}«»"\'""' "…/ ")
@@ -19,52 +21,47 @@ SPINNER_DELAY = 150  # мс
 WAITING_SYMBOL = "○"
 
 # ─── Office Ribbon palette ──────────────────────────────────────────────
-# Плоский дизайн: нет цветных заливок по умолчанию. Hover — лёгкая
-# серая подсветка с тонкой рамкой; pressed — чуть темнее; toggle on —
-# светло-голубой фон с синей рамкой; danger — лёгкий красноватый акцент
-# в hover; disabled — приглушённый текст.
-
-# Базовый цвет фона панели/toolbar — берётся из системного по умолчанию,
-# но удобно иметь явный для перекраски кнопок:
-RIBBON_BG = "#ffffff"
+# Базовый цвет фона панели/toolbar
+RIBBON_BG = style.get("colors", "ribbon_bg")
 
 # Normal — без заливки, текст тёмный
-RIBBON_NORMAL_FG       = "#1a1a1a"
-RIBBON_NORMAL_BORDER   = RIBBON_BG  # рамка цвета фона = невидимая
+RIBBON_NORMAL_FG       = style.get("colors", "ribbon_normal_fg")
+RIBBON_NORMAL_BORDER   = style.get("colors", "ribbon_normal_border")
 
-# Hover (для обычных кнопок и primary)
-RIBBON_HOVER_BG        = "#f3f3f3"
-RIBBON_HOVER_BORDER    = "#c7c7c7"
+# Hover
+RIBBON_HOVER_BG        = style.get("colors", "ribbon_hover_bg")
+RIBBON_HOVER_BORDER    = style.get("colors", "ribbon_hover_border")
 
-# Pressed (нажатие)
-RIBBON_PRESSED_BG      = "#e1ecf7"
-RIBBON_PRESSED_BORDER  = "#a0c4ea"
+# Pressed
+RIBBON_PRESSED_BG      = style.get("colors", "ribbon_pressed_bg")
+RIBBON_PRESSED_BORDER  = style.get("colors", "ribbon_pressed_border")
 
-# Danger accent (для «Исправления» — на hover красноватый акцент)
-RIBBON_DANGER_FG       = "#c0392b"
-RIBBON_DANGER_HOVER_BG = "#fdecea"
-RIBBON_DANGER_HOVER_BORDER = "#e8a8a0"
-RIBBON_DANGER_PRESSED_BG   = "#fad4d0"
-RIBBON_DANGER_PRESSED_BORDER = "#d77a70"
+# Danger accent
+RIBBON_DANGER_FG       = style.get("colors", "ribbon_danger_fg")
+RIBBON_DANGER_HOVER_BG = style.get("colors", "ribbon_danger_hover_bg")
+RIBBON_DANGER_HOVER_BORDER = style.get("colors", "ribbon_danger_hover_border")
+RIBBON_DANGER_PRESSED_BG   = style.get("colors", "ribbon_danger_pressed_bg")
+RIBBON_DANGER_PRESSED_BORDER = style.get("colors", "ribbon_danger_pressed_border")
 
-# Toggle on (нажат)
-RIBBON_TOGGLE_ON_BG      = "#cfe4f9"
-RIBBON_TOGGLE_ON_HOVER   = "#b9d5f3"
-RIBBON_TOGGLE_ON_BORDER  = "#2e75b5"
-RIBBON_TOGGLE_ON_FG      = "#1a1a1a"
+# Toggle on
+RIBBON_TOGGLE_ON_BG      = style.get("colors", "ribbon_toggle_on_bg")
+RIBBON_TOGGLE_ON_HOVER   = style.get("colors", "ribbon_toggle_on_hover")
+RIBBON_TOGGLE_ON_BORDER  = style.get("colors", "ribbon_toggle_on_border")
+RIBBON_TOGGLE_ON_FG      = style.get("colors", "ribbon_toggle_on_fg")
 
-# Toggle mixed (часть on)
-RIBBON_TOGGLE_MIXED_BG    = "#e8f0fb"
-RIBBON_TOGGLE_MIXED_HOVER = "#d6e4f5"
-RIBBON_TOGGLE_MIXED_BORDER = "#7aa6d7"
-RIBBON_TOGGLE_MIXED_FG    = "#1a1a1a"
+# Toggle mixed
+RIBBON_TOGGLE_MIXED_BG    = style.get("colors", "ribbon_toggle_mixed_bg")
+RIBBON_TOGGLE_MIXED_HOVER = style.get("colors", "ribbon_toggle_mixed_hover")
+RIBBON_TOGGLE_MIXED_BORDER = style.get("colors", "ribbon_toggle_mixed_border")
+RIBBON_TOGGLE_MIXED_FG    = style.get("colors", "ribbon_toggle_mixed_fg")
 
 # Disabled
-RIBBON_DISABLED_FG = "#a8a8a8"
+RIBBON_DISABLED_FG = style.get("colors", "ribbon_disabled_fg")
 
 # Шрифты
-RIBBON_FONT_LG = ("Segoe UI", 9)
-RIBBON_FONT_SM = ("Segoe UI", 8)
+RIBBON_FONT_FAMILY = style.get("fonts", "ribbon_font_family")
+RIBBON_FONT_LG = (RIBBON_FONT_FAMILY, style.get("fonts", "ribbon_font_size_lg"))
+RIBBON_FONT_SM = (RIBBON_FONT_FAMILY, style.get("fonts", "ribbon_font_size_sm"))
 
 # Пути
 UI_DIR    = os.path.dirname(os.path.abspath(__file__))

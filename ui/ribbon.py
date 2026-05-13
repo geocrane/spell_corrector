@@ -16,6 +16,7 @@ from tkinter import ttk
 from typing import Callable, Optional
 
 from ui import icons
+from ui.style_config import style
 from ui.constants import (
     RIBBON_BG,
     RIBBON_NORMAL_FG,
@@ -40,6 +41,7 @@ from ui.constants import (
     RIBBON_DISABLED_FG,
     RIBBON_FONT_LG,
     RIBBON_FONT_SM,
+    RIBBON_FONT_FAMILY,
 )
 
 
@@ -96,17 +98,18 @@ class _RibbonBase(tk.Frame):
         self._orient = orient
         self._compact = compact
 
-        # Размеры/отступы — Ribbon-like
+        # Размеры/отступы — из конфига
+        config_key = "compact" if compact else "normal"
+        self._outer_padx = style.get("ribbon", config_key, "outer_padx")
+        self._outer_pady = style.get("ribbon", config_key, "outer_pady")
+        self._gap = style.get("ribbon", config_key, "gap")
+
         if compact:
-            self._outer_padx, self._outer_pady = 4, 3
-            self._gap = 2
             self._font = RIBBON_FONT_SM
-            self._fallback_font = ("Segoe UI", max(icon_size - 2, 10))
+            self._fallback_font = (RIBBON_FONT_FAMILY, max(icon_size - 2, 10))
         else:
-            self._outer_padx, self._outer_pady = 8, 4
-            self._gap = 3
             self._font = RIBBON_FONT_LG
-            self._fallback_font = ("Segoe UI", max(icon_size - 4, 12), "bold")
+            self._fallback_font = (RIBBON_FONT_FAMILY, max(icon_size - 4, 12), "bold")
 
         self._hovering = False
         self._pressed = False
@@ -247,9 +250,9 @@ class _RibbonBase(tk.Frame):
         except tk.TclError:
             pass
 
-    def set_icon(self, icon_key: str):
+    def set_icon(self, icon_key: str, state: str = "normal"):
         self._icon_key = icon_key
-        photo = icons.get_icon(icon_key, self._icon_size)
+        photo = icons.get_icon(icon_key, self._icon_size, state=state)
         self._photo = photo
         if photo is not None:
             self._icon_label.config(image=photo, text="")
@@ -302,9 +305,11 @@ class RibbonButton(_RibbonBase):
     def _apply_visual(self):
         if not self._enabled:
             self._paint(self._parent_bg, RIBBON_DISABLED_FG, border=self._parent_bg)
+            self.set_icon(self._icon_key, state="disabled")
             self.config(cursor="arrow")
             return
 
+        self.set_icon(self._icon_key, state="normal")
         if self._style == "danger":
             normal_fg = RIBBON_DANGER_FG
             hover_bg, hover_border = RIBBON_DANGER_HOVER_BG, RIBBON_DANGER_HOVER_BORDER
@@ -380,9 +385,11 @@ class RibbonToggle(_RibbonBase):
     def _apply_visual(self):
         if self._state == "disabled":
             self._paint(self._parent_bg, RIBBON_DISABLED_FG, border=self._parent_bg)
+            self.set_icon(self._icon_key, state="disabled")
             self.config(cursor="arrow")
             return
 
+        self.set_icon(self._icon_key, state="normal")
         if self._state == "on":
             base_bg, hover_bg = RIBBON_TOGGLE_ON_BG, RIBBON_TOGGLE_ON_HOVER
             border = RIBBON_TOGGLE_ON_BORDER

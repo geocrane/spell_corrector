@@ -59,7 +59,7 @@ ICON_FALLBACK_TEXT: dict[str, str] = {
     "revisions": "R",
 }
 
-_CACHE: dict[tuple[str, int], "tk.PhotoImage"] = {}
+_CACHE: dict[tuple[str, int, str], "tk.PhotoImage"] = {}
 _PIL_AVAILABLE: Optional[bool] = None  # None = не пробовали, True/False = знаем
 
 
@@ -68,7 +68,7 @@ def _try_import_pil():
     global _PIL_AVAILABLE
     if _PIL_AVAILABLE is None:
         try:
-            from PIL import Image, ImageTk  # noqa: F401
+            from PIL import Image, ImageTk, ImageEnhance  # noqa: F401
 
             _PIL_AVAILABLE = True
         except ImportError:
@@ -77,23 +77,28 @@ def _try_import_pil():
     return _PIL_AVAILABLE
 
 
-def get_icon(key: str, size: int = ICON_LG) -> Optional["tk.PhotoImage"]:
-    """Лениво загрузить иконку по ключу и размеру.
+def get_icon(key: str, size: int = ICON_LG, state: str = "normal") -> Optional["tk.PhotoImage"]:
+    """Лениво загрузить иконку по ключу, размеру и состоянию.
 
     Возвращает tk.PhotoImage, готовый к использованию в Label(image=...),
     либо None — если Pillow недоступна или PNG-файла нет. Кэширует
-    результаты по (key, size). Модуль удерживает ссылки на PhotoImage —
-    не пытайтесь сохранять их сами, ссылки нужны только если объект
-    создан вне кэша.
+    результаты по (key, size, state).
     """
-    cache_key = (key, size)
+    cache_key = (key, size, state)
     if cache_key in _CACHE:
         return _CACHE[cache_key]
 
     if not _try_import_pil():
         return None
 
-    rel = ICONS.get(key)
+    # Пытаемся найти специфичную иконку для состояния (напр. find_disabled)
+    rel = None
+    if state != "normal":
+        rel = ICONS.get(f"{key}_{state}")
+
+    if not rel:
+        rel = ICONS.get(key)
+
     if not rel:
         logger.warning("Неизвестный ключ иконки: %s", key)
         return None
@@ -103,15 +108,26 @@ def get_icon(key: str, size: int = ICON_LG) -> Optional["tk.PhotoImage"]:
         return None
 
     try:
-        from PIL import Image, ImageTk
+        from PIL import Image, ImageTk, ImageEnhance
 
         img = Image.open(path).convert("RGBA")
         img.thumbnail((size, size), Image.LANCZOS)
+
+        # Если запрошено состояние disabled и нет отдельного файла — бледним программно
+        if state == "disabled" and not ICONS.get(f"{key}_{state}"):
+            # 1. Десатурация (делаем почти ЧБ)
+            enhancer = ImageEnhance.Color(img)
+            img = enhancer.enhance(0.2)
+            # 2. Прозрачность (50%)
+            alpha = img.split()[3]
+            alpha = alpha.point(lambda p: int(p * 0.5))
+            img.putalpha(alpha)
+
         photo = ImageTk.PhotoImage(img)
         _CACHE[cache_key] = photo
         return photo
     except Exception as exc:
-        logger.exception("Не удалось загрузить иконку %s (%s): %s", key, path, exc)
+        logger.exception("Не удалось загрузить иконку %s (%s, %s): %s", key, path, state, exc)
         return None
 
 
