@@ -111,25 +111,17 @@ def get_icon(key: str, size: int = ICON_LG, state: str = "normal") -> Optional["
         from PIL import Image, ImageTk, ImageEnhance
 
         img = Image.open(path).convert("RGBA")
-        img.thumbnail((size, size), Image.LANCZOS)
+        # Деформирующее масштабирование точно к (size, size): иконка заполняет
+        # отведённую кнопке коробку независимо от исходных пропорций PNG.
+        img = img.resize((size, size), Image.LANCZOS)
 
         # Если запрошено состояние disabled и нет отдельного файла — бледним программно
         if state == "disabled" and not ICONS.get(f"{key}_{state}"):
-            # 1. Десатурация (делаем почти ЧБ)
             enhancer = ImageEnhance.Color(img)
             img = enhancer.enhance(0.2)
-            # 2. Прозрачность (50%)
             alpha = img.split()[3]
             alpha = alpha.point(lambda p: int(p * 0.5))
             img.putalpha(alpha)
-
-        # Унифицируем габариты: паддим до квадрата size×size прозрачным фоном,
-        # чтобы PNG с разной внутренней пропорцией давали одинаковую "коробку".
-        if img.size != (size, size):
-            canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            offset = ((size - img.size[0]) // 2, (size - img.size[1]) // 2)
-            canvas.paste(img, offset, img)
-            img = canvas
 
         photo = ImageTk.PhotoImage(img)
         _CACHE[cache_key] = photo

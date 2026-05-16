@@ -1,7 +1,9 @@
 """
 Функции создания и обновления UI-плиток документов и предложений.
 
-Все функции принимают параметры явно, не обращаются к self.*.
+Плитки оформлены в ribbon-стиле: Canvas со скруглённым прямоугольником-фоном,
+тонкая рамка, мягкая палитра. Состояния normal / selected обновляются через
+RibbonTile.set_selected(...).
 """
 
 import difflib
@@ -14,166 +16,273 @@ from ui.constants import (
     DIFF_REMOVED_BG, DIFF_REMOVED_FG,
     PUNCTUATION,
     WAITING_SYMBOL,
+    RIBBON_BG,
+    RIBBON_HOVER_BG,
+    RIBBON_HOVER_BORDER,
+    RIBBON_TOGGLE_ON_BG,
+    RIBBON_TOGGLE_ON_BORDER,
+    RIBBON_NORMAL_FG,
+    RIBBON_DANGER_FG,
+    RIBBON_DANGER_HOVER_BG,
 )
+from ui.ribbon import draw_rounded_rect, _resolve_parent_bg
+from ui.style_config import style
 
 
-def create_document_tile(parent, doc, on_click, is_selected=False, cached_errors=None, is_active_check=False):
-    """Создать плитку для документа. Иконка берётся из провайдера.
+# ─── RibbonTile — базовая плитка в ribbon-стиле ──────────────────────────
 
-    Args:
-        parent: Родительский виджет.
-        doc: Словарь документа с ключами name, type.
-        on_click: Callback(doc) при клике.
-        is_selected: True если документ выбран.
-        cached_errors: dict с результатами проверки из кэша или None.
-        is_active_check: True если на этом документе сейчас идёт проверка.
+
+class RibbonTile(tk.Canvas):
+    """Плитка с rounded-rect фоном в ribbon-стиле.
+
+    Содержимое складывать в .body (tk.Frame). Состояния:
+      - normal: белый фон, тонкая серая рамка
+      - selected: голубой фон toggle_on, синяя рамка
+
+    Канвас сам подгоняет высоту под inner.winfo_reqheight() и ширину
+    под parent через <Configure> родителя.
+    """
+
+    def __init__(self, parent, *, padding: int = None, radius: int = None):
+        self._parent_bg = _resolve_parent_bg(parent)
+        super().__init__(
+            parent, bd=0, highlightthickness=0, bg=self._parent_bg,
+        )
+
+        self._padding = padding if padding is not None else style.get(
+            "tile", "padding", default=8,
+        )
+        self._radius = radius if radius is not None else style.get(
+            "tile", "border_radius", default=6,
+        )
+
+        self._is_selected = False
+        self._body = tk.Frame(self, bg=RIBBON_BG, bd=0)
+        self._body_window = self.create_window(
+            self._padding, self._padding, window=self._body, anchor="nw",
+        )
+
+        self.bind("<Configure>", self._on_canvas_configure)
+        self._body.bind("<Configure>", self._on_body_configure)
+
+        self._redraw()
+
+    @property
+    def body(self) -> tk.Frame:
+        return self._body
+
+    def set_selected(self, selected: bool):
+        if self._is_selected == bool(selected):
+            return
+        self._is_selected = bool(selected)
+        self._sync_subwidget_bg()
+        self._redraw()
+
+    def is_selected(self) -> bool:
+        return self._is_selected
+
+    def _current_palette(self):
+        if self._is_selected:
+            return RIBBON_TOGGLE_ON_BG, RIBBON_TOGGLE_ON_BORDER
+        return RIBBON_BG, RIBBON_HOVER_BORDER
+
+    def _on_canvas_configure(self, _event=None):
+        w = self.winfo_width()
+        body_w = max(1, w - self._padding * 2)
+        try:
+            self.itemconfig(self._body_window, width=body_w)
+        except tk.TclError:
+            pass
+        self._redraw()
+
+    def _on_body_configure(self, _event=None):
+        body_h = self._body.winfo_reqheight()
+        h = body_h + self._padding * 2
+        if int(self.cget("height")) != h:
+            self.config(height=h)
+        # winfo_height() ещё не обновился — рисуем с явной высотой
+        self._redraw(target_h=h)
+
+    def _redraw(self, target_h: int = None):
+        bg, border = self._current_palette()
+        self.delete("tile_bg")
+        w = self.winfo_width()
+        h = target_h if target_h is not None else self.winfo_height()
+        if w < 2 or h < 2:
+            return
+        draw_rounded_rect(
+            self, 1, 1, w - 1, h - 1,
+            radius=self._radius,
+            fill=bg, outline=border, width=1,
+            tags="tile_bg",
+        )
+        self.tag_lower("tile_bg")
+
+    def _sync_subwidget_bg(self):
+        """Синхронизировать bg всех вложенных Frame/Label с цветом плитки."""
+        bg, _ = self._current_palette()
+        self._body.config(bg=bg)
+        _recolor_descendants(self._body, bg)
+
+    def bind_click(self, callback):
+        """Привязать обработчик клика к Canvas и всем потомкам body."""
+        self.bind("<Button-1>", lambda e: callback())
+        self.config(cursor="hand2")
+        _bind_click_recursive(self._body, callback)
+
+
+def _recolor_descendants(widget, bg):
+    """Рекурсивно красить только «нейтральные» Label/Frame.
+
+    Не трогаем виджеты с защищённым фоном (бейджи индекса с яркими цветами,
+    diff-Text-widget и т.п.) — у них setattr('_keep_bg', True).
+    """
+    for child in widget.winfo_children():
+        if getattr(child, "_keep_bg", False):
+            continue
+        if isinstance(child, (tk.Frame, tk.Label)):
+            try:
+                child.config(bg=bg)
+            except tk.TclError:
+                pass
+        if isinstance(child, tk.Frame):
+            _recolor_descendants(child, bg)
+
+
+def _bind_click_recursive(widget, callback):
+    """Привязать <Button-1> ко всем потомкам — клик в любом месте плитки."""
+    for child in widget.winfo_children():
+        # Не перехватываем клики у нажимаемых кнопок и Text-виджетов с курсором
+        if isinstance(child, tk.Button):
+            continue
+        try:
+            child.bind("<Button-1>", lambda e: callback(), add="+")
+            child.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+        if isinstance(child, (tk.Frame, tk.Label)):
+            _bind_click_recursive(child, callback)
+
+
+# ─── Плитки документов ───────────────────────────────────────────────────
+
+
+def create_document_tile(parent, doc, on_click, is_selected=False,
+                         cached_errors=None, is_active_check=False):
+    """Создать плитку для документа в ribbon-стиле.
 
     Returns:
-        tuple: (tile, status_label_or_None).
+        tuple: (RibbonTile, status_label_or_None).
     """
-    tile = tk.Frame(parent, relief="raised", borderwidth=1, bg="#f0f0f0")
-    tile.pack(fill=tk.X, pady=2, padx=2)
+    tile = RibbonTile(parent)
+    tile.pack(fill=tk.X, pady=3, padx=2)
 
-    # Иконка и цвет из провайдера
+    body = tile.body
+
     provider = get_provider(doc.get("type", ""))
     icon_text, icon_color = provider.get_icon() if provider else ("?", "#888888")
 
     icon_label = tk.Label(
-        tile, text=icon_text, font=("Arial", 14, "bold"),
+        body, text=icon_text, font=("Arial", 14, "bold"),
         fg="white", bg=icon_color, width=2, height=1,
     )
-    icon_label.pack(side=tk.LEFT, padx=(5, 10), pady=5)
+    icon_label._keep_bg = True  # бейдж провайдера остаётся ярким
+    icon_label.pack(side=tk.LEFT, padx=(0, 10), pady=2)
 
     name_label = tk.Label(
-        tile, text=doc["name"], wraplength=250, bg="#f0f0f0", anchor="w"
+        body, text=doc["name"], bg=RIBBON_BG,
+        fg=RIBBON_NORMAL_FG, anchor="w", justify="left",
     )
-    name_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
+    name_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=2)
+    name_label.bind("<Configure>", lambda e, lbl=name_label: lbl.config(wraplength=max(1, e.width)))
 
-    click_widgets = [tile, icon_label, name_label]
     status_label = None
-
     if is_selected and (is_active_check or cached_errors is not None):
-        status_label = tk.Label(tile, text="", font=("Arial", 10), bg="#f0f0f0")
-        status_label.pack(side=tk.RIGHT, padx=(0, 10), pady=5)
-        click_widgets.append(status_label)
+        status_label = tk.Label(body, text="", font=("Arial", 10), bg=RIBBON_BG)
+        status_label.pack(side=tk.RIGHT, padx=(0, 0), pady=2)
     elif cached_errors is not None:
         errors = sum(1 for r in cached_errors.values() if r.get("has_error"))
         text = f"✗ {errors}" if errors > 0 else "✓"
         fg = "#dc3545" if errors > 0 else "#28a745"
-        status_label = tk.Label(tile, text=text, font=("Arial", 10), fg=fg, bg="#f0f0f0")
-        status_label.pack(side=tk.RIGHT, padx=(0, 10), pady=5)
-        click_widgets.append(status_label)
+        status_label = tk.Label(
+            body, text=text, font=("Arial", 10), fg=fg, bg=RIBBON_BG,
+        )
+        status_label.pack(side=tk.RIGHT, padx=(0, 0), pady=2)
 
-    for widget in click_widgets:
-        widget.bind("<Button-1>", lambda e, d=doc: on_click(d))
-        widget.configure(cursor="hand2")
+    tile.set_selected(bool(is_selected))
+    tile.bind_click(lambda d=doc: on_click(d))
 
     return tile, status_label
 
 
 def highlight_selected_tile(tile_frames, selected_doc):
-    """Подсветить выбранную плитку документа, остальные вернуть к обычному виду.
+    """Подсветить выбранную плитку документа.
 
     Args:
-        tile_frames: dict {id(doc): tile_frame}.
+        tile_frames: dict {id(doc): RibbonTile}.
         selected_doc: Выбранный документ или None.
     """
+    selected_id = id(selected_doc) if selected_doc is not None else None
     for doc_id, tile in tile_frames.items():
-        if selected_doc and doc_id == id(selected_doc):
-            tile.config(bg="#cce5ff")
-            for child in tile.winfo_children():
-                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O", "X"):
-                    child.config(bg="#cce5ff")
-        else:
-            tile.config(bg="#f0f0f0")
-            for child in tile.winfo_children():
-                if isinstance(child, tk.Label) and child.cget("text") not in ("W", "O", "X"):
-                    child.config(bg="#f0f0f0")
+        if not isinstance(tile, RibbonTile) or not tile.winfo_exists():
+            continue
+        tile.set_selected(doc_id == selected_id)
 
 
 def highlight_selected_sentence_tile(tile_frames, selected_index):
-    """Подсветить выбранную плитку предложения.
-
-    Args:
-        tile_frames: dict {index: tile_frame}.
-        selected_index: Индекс выбранного предложения или None.
-    """
+    """Подсветить выбранную плитку предложения."""
     for idx, tile in tile_frames.items():
-        if not tile.winfo_exists():
+        if not isinstance(tile, RibbonTile) or not tile.winfo_exists():
             continue
-        if selected_index is not None and idx == selected_index:
-            tile.config(bg="#e8f4fd", relief="solid", borderwidth=2)
-            for child in tile.winfo_children():
-                if isinstance(child, (tk.Frame, tk.Label)):
-                    bg = child.cget("bg")
-                    if bg and bg not in ("#f0f0f0", "", "systembuttonface"):
-                        # Не менять фон кнопок и diff-виджетов
-                        pass
-                    elif isinstance(child, tk.Label):
-                        child.config(bg="#e8f4fd")
-        else:
-            tile.config(bg="#f0f0f0", relief="raised", borderwidth=1)
-            for child in tile.winfo_children():
-                if isinstance(child, tk.Label):
-                    current_bg = child.cget("bg")
-                    # Восстановить оригинальные фоны
-                    if current_bg in ("#e8f4fd",):
-                        child.config(bg="#f0f0f0")
+        tile.set_selected(selected_index is not None and idx == selected_index)
+
+
+# ─── Плитки предложений ──────────────────────────────────────────────────
 
 
 def create_sentence_tile_checking(parent, sentence, on_click):
     """Создать плитку со спиннером во время проверки.
 
-    Args:
-        parent: Родительский виджет.
-        sentence: Словарь предложения с index, text.
-        on_click: Callback(sentence) при клике.
-
     Returns:
-        tuple: (tile, status_label).
+        tuple: (RibbonTile, status_label).
     """
-    tile = tk.Frame(parent, relief="raised", borderwidth=1, bg="#f0f0f0")
-    tile.pack(fill=tk.X, pady=2, padx=2)
+    tile = RibbonTile(parent)
+    tile.pack(fill=tk.X, pady=3, padx=2)
 
+    body = tile.body
     index = sentence["index"]
 
     index_label = tk.Label(
-        tile, text=str(index + 1), font=("Arial", 10),
+        body, text=str(index + 1), font=("Arial", 10),
         fg="white", bg="#666666", width=3, height=1,
     )
-    index_label.pack(side=tk.LEFT, padx=(5, 5), pady=5)
+    index_label._keep_bg = True
+    index_label.pack(side=tk.LEFT, padx=(0, 5), pady=2)
 
     status_label = tk.Label(
-        tile, text=WAITING_SYMBOL, bg="#f0f0f0", fg="#999999", font=("Arial", 12)
+        body, text=WAITING_SYMBOL, bg=RIBBON_BG, fg="#999999",
+        font=("Arial", 12),
     )
-    status_label.pack(side=tk.LEFT, padx=(0, 5), pady=5)
+    status_label.pack(side=tk.LEFT, padx=(0, 5), pady=2)
 
     text_label = tk.Label(
-        tile, text=sentence["text"], wraplength=250,
-        bg="#f0f0f0", anchor="w", justify="left",
+        body, text=sentence["text"],
+        bg=RIBBON_BG, fg=RIBBON_NORMAL_FG, anchor="w", justify="left",
     )
-    text_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5, padx=(0, 5))
+    text_label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=2, padx=(0, 5))
+    text_label.bind("<Configure>", lambda e, lbl=text_label: lbl.config(wraplength=max(1, e.width)))
 
-    for widget in [tile, index_label, status_label, text_label]:
-        widget.bind("<Button-1>", lambda e, s=sentence: on_click(s))
-        widget.configure(cursor="hand2")
+    tile.bind_click(lambda s=sentence: on_click(s))
 
     return tile, status_label
 
 
-def create_checked_sentence_tile(parent, sentence, result, on_click, on_apply=None, on_skip=None):
+def create_checked_sentence_tile(parent, sentence, result, on_click,
+                                 on_apply=None, on_skip=None):
     """Создать плитку для проверенного предложения.
 
-    Args:
-        parent: Родительский виджет.
-        sentence: Словарь предложения с index, text.
-        result: Словарь результата с original, corrected, has_error, state.
-        on_click: Callback(sentence) при клике на текст.
-        on_apply: Callback(index) при нажатии "Применить"/"Отменить".
-        on_skip: Callback(index) при нажатии "Пропустить"/"Отменить".
-
     Returns:
-        dict: {"tile": tile, "buttons": {...} или None}.
+        dict: {"tile": RibbonTile, "buttons": {...} | None}.
     """
     index = sentence["index"]
     original = result["original"]
@@ -181,11 +290,48 @@ def create_checked_sentence_tile(parent, sentence, result, on_click, on_apply=No
     has_error = result["has_error"]
     state = result.get("state", "pending")
 
-    tile = tk.Frame(parent, relief="raised", borderwidth=1, bg="#f0f0f0")
-    tile.pack(fill=tk.X, pady=2, padx=2)
+    tile = RibbonTile(parent)
+    tile.pack(fill=tk.X, pady=3, padx=2)
 
-    header_frame = tk.Frame(tile, bg="#f0f0f0")
-    header_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 0))
+    info = _populate_checked_sentence_body(
+        tile, index, original, corrected, has_error, state, on_apply, on_skip,
+    )
+
+    tile.bind_click(lambda s=sentence: on_click(s))
+
+    return {"tile": tile, "buttons": info}
+
+
+def update_sentence_tile(tile, index, original, corrected, has_error, sentence,
+                         on_click, on_apply=None, on_skip=None):
+    """Обновить существующую плитку после проверки.
+
+    Returns:
+        dict: {"buttons": {...} | None}.
+    """
+    if isinstance(tile, RibbonTile):
+        for widget in tile.body.winfo_children():
+            widget.destroy()
+        info = _populate_checked_sentence_body(
+            tile, index, original, corrected, has_error,
+            state="pending", on_apply=on_apply, on_skip=on_skip,
+        )
+        tile.bind_click(lambda s=sentence: on_click(s))
+        return {"buttons": info}
+
+    # Fallback на случай старого tk.Frame (на всякий случай)
+    for widget in tile.winfo_children():
+        widget.destroy()
+    return {"buttons": None}
+
+
+def _populate_checked_sentence_body(tile, index, original, corrected, has_error,
+                                    state, on_apply, on_skip):
+    """Заполнить body плитки проверенного предложения. Возвращает buttons-info."""
+    body = tile.body
+
+    header_frame = tk.Frame(body, bg=RIBBON_BG)
+    header_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 0))
 
     if state in ("applied", "skipped"):
         bg_color = "#28a745"
@@ -198,23 +344,23 @@ def create_checked_sentence_tile(parent, sentence, result, on_click, on_apply=No
         header_frame, text=str(index + 1), font=("Arial", 10),
         fg="white", bg=bg_color, width=3, height=1,
     )
+    index_label._keep_bg = True
     index_label.pack(side=tk.LEFT)
 
     result_label = tk.Label(
-        header_frame, text="✓", bg="#f0f0f0",
+        header_frame, text="✓", bg=RIBBON_BG,
         fg="#28a745" if not has_error else "#dc3545", font=("Arial", 12),
     )
     result_label.pack(side=tk.LEFT, padx=(5, 0))
 
-    click_widgets = [tile, header_frame, index_label, result_label]
     buttons_info = None
 
     if has_error:
-        text_widget = create_diff_widget(tile, original, corrected)
-        click_widgets.append(text_widget)
+        text_widget = create_diff_widget(body, original, corrected)
+        text_widget._keep_bg = True  # фон Text — пусть остаётся как был
 
-        buttons_frame = tk.Frame(tile, bg="#f0f0f0")
-        buttons_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
+        buttons_frame = tk.Frame(body, bg=RIBBON_BG)
+        buttons_frame.pack(side=tk.TOP, fill=tk.X, pady=(4, 0))
 
         if state == "applied":
             apply_text, apply_bg = "Отменить", "#28a745"
@@ -223,8 +369,11 @@ def create_checked_sentence_tile(parent, sentence, result, on_click, on_apply=No
 
         apply_btn = tk.Button(
             buttons_frame, text=apply_text, fg="white", bg=apply_bg, width=10,
+            relief="flat", bd=0,
+            activebackground=apply_bg, activeforeground="white",
             command=lambda idx=index: on_apply(idx) if on_apply else None,
         )
+        apply_btn._keep_bg = True
         apply_btn.pack(side=tk.LEFT, padx=(0, 5))
         if state == "skipped":
             apply_btn.config(state="disabled", bg="#6c757d")
@@ -236,121 +385,50 @@ def create_checked_sentence_tile(parent, sentence, result, on_click, on_apply=No
 
         skip_btn = tk.Button(
             buttons_frame, text=skip_text, fg="white", bg=skip_bg, width=10,
+            relief="flat", bd=0,
+            activebackground=skip_bg, activeforeground="white",
             command=lambda idx=index: on_skip(idx) if on_skip else None,
         )
+        skip_btn._keep_bg = True
         skip_btn.pack(side=tk.LEFT)
         if state == "applied":
             skip_btn.config(state="disabled")
 
-        buttons_info = {"apply": apply_btn, "skip": skip_btn, "index_label": index_label}
+        buttons_info = {
+            "apply": apply_btn, "skip": skip_btn, "index_label": index_label,
+        }
     else:
         text_label = tk.Label(
-            tile, text=original, wraplength=300, bg="#f0f0f0", anchor="w", justify="left",
+            body, text=original, bg=RIBBON_BG,
+            fg=RIBBON_NORMAL_FG, anchor="w", justify="left",
         )
-        text_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
-        click_widgets.append(text_label)
+        text_label.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        text_label.bind("<Configure>", lambda e, lbl=text_label: lbl.config(wraplength=max(1, e.width)))
 
-    for widget in click_widgets:
-        widget.bind("<Button-1>", lambda e, s=sentence: on_click(s))
-        widget.configure(cursor="hand2")
-
-    return {"tile": tile, "buttons": buttons_info}
+    return buttons_info
 
 
-def update_sentence_tile(tile, index, original, corrected, has_error, sentence, on_click, on_apply=None, on_skip=None):
-    """Обновить существующую плитку после проверки.
-
-    Args:
-        tile: Существующая плитка (tk.Frame).
-        index: Индекс предложения.
-        original: Исходный текст.
-        corrected: Исправленный текст.
-        has_error: True если есть изменения.
-        sentence: Полный объект предложения с text, range_start, range_end.
-        on_click: Callback(sentence) при клике.
-        on_apply: Callback(index) для применить/отменить.
-        on_skip: Callback(index) для пропустить.
-
-    Returns:
-        dict: {"buttons": {...} или None}.
-    """
-    for widget in tile.winfo_children():
-        widget.destroy()
-
-    header_frame = tk.Frame(tile, bg="#f0f0f0")
-    header_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 0))
-
-    bg_color = "#666666" if has_error else "#28a745"
-    index_label = tk.Label(
-        header_frame, text=str(index + 1), font=("Arial", 10),
-        fg="white", bg=bg_color, width=3, height=1,
-    )
-    index_label.pack(side=tk.LEFT)
-
-    result_label = tk.Label(
-        header_frame, text="✓", bg="#f0f0f0",
-        fg="#28a745" if not has_error else "#dc3545", font=("Arial", 12),
-    )
-    result_label.pack(side=tk.LEFT, padx=(5, 0))
-
-    click_widgets = [tile, header_frame, index_label, result_label]
-    buttons_info = None
-
-    if has_error:
-        text_widget = create_diff_widget(tile, original, corrected)
-        click_widgets.append(text_widget)
-
-        buttons_frame = tk.Frame(tile, bg="#f0f0f0")
-        buttons_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
-
-        apply_btn = tk.Button(
-            buttons_frame, text="Применить", fg="white", bg="#dc3545", width=10,
-            command=lambda idx=index: on_apply(idx) if on_apply else None,
-        )
-        apply_btn.pack(side=tk.LEFT, padx=(0, 5))
-
-        skip_btn = tk.Button(
-            buttons_frame, text="Пропустить", fg="white", bg="#6c757d", width=10,
-            command=lambda idx=index: on_skip(idx) if on_skip else None,
-        )
-        skip_btn.pack(side=tk.LEFT)
-
-        buttons_info = {"apply": apply_btn, "skip": skip_btn, "index_label": index_label}
-    else:
-        text_label = tk.Label(
-            tile, text=original, wraplength=300, bg="#f0f0f0", anchor="w", justify="left",
-        )
-        text_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
-        click_widgets.append(text_label)
-
-    for widget in click_widgets:
-        widget.bind("<Button-1>", lambda e, s=sentence: on_click(s))
-        widget.configure(cursor="hand2")
-
-    return {"buttons": buttons_info}
+# ─── Diff-виджет ─────────────────────────────────────────────────────────
 
 
 def create_diff_widget(parent, original, corrected, after_callback=None):
-    """Создать Text-виджет с цветным diff.
-
-    Args:
-        parent: Родительский виджет.
-        original: Исходный текст.
-        corrected: Исправленный текст.
-        after_callback: Callback() для вызова после отрисовки.
-
-    Returns:
-        tk.Text: Виджет с diff.
-    """
+    """Создать Text-виджет с цветным diff."""
     text_widget = tk.Text(
         parent, wrap="word", height=1, borderwidth=0,
-        highlightthickness=0, bg="#f0f0f0", cursor="hand2",
+        highlightthickness=0, bg=RIBBON_BG, cursor="hand2",
     )
-    text_widget.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(0, 5))
+    text_widget.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
 
-    text_widget.tag_configure("added", background=DIFF_ADDED_BG, foreground=DIFF_ADDED_FG)
-    text_widget.tag_configure("removed", background=DIFF_REMOVED_BG, foreground=DIFF_REMOVED_FG, overstrike=True)
-    text_widget.tag_configure("removed_punct", background=DIFF_REMOVED_BG, foreground=DIFF_REMOVED_FG)
+    text_widget.tag_configure(
+        "added", background=DIFF_ADDED_BG, foreground=DIFF_ADDED_FG,
+    )
+    text_widget.tag_configure(
+        "removed", background=DIFF_REMOVED_BG, foreground=DIFF_REMOVED_FG,
+        overstrike=True,
+    )
+    text_widget.tag_configure(
+        "removed_punct", background=DIFF_REMOVED_BG, foreground=DIFF_REMOVED_FG,
+    )
     text_widget.tag_configure("normal")
 
     matcher = difflib.SequenceMatcher(None, original, corrected)
@@ -386,62 +464,65 @@ def create_diff_widget(parent, original, corrected, after_callback=None):
     return text_widget
 
 
+# ─── Плитка пословной правки (режим ошибок) ──────────────────────────────
+
+
 def create_word_correction_tile(parent, correction, on_click):
-    """Создать плитку для одной пословной правки (режим ошибок).
+    """Создать плитку для одной пословной правки."""
+    tile = RibbonTile(parent)
+    tile.pack(fill=tk.X, pady=3, padx=2)
 
-    Args:
-        parent: Родительский виджет.
-        correction: WordCorrection-словарь (см. core.word_corrections).
-        on_click: Callback(correction) при клике на плитку.
+    body = tile.body
 
-    Returns:
-        tk.Frame: Плитка.
-    """
-    tile = tk.Frame(parent, relief="raised", borderwidth=1, bg="#f0f0f0")
-    tile.pack(fill=tk.X, pady=2, padx=2)
-
-    header_frame = tk.Frame(tile, bg="#f0f0f0")
-    header_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 0))
+    header_frame = tk.Frame(body, bg=RIBBON_BG)
+    header_frame.pack(side=tk.TOP, fill=tk.X)
 
     sentence_index = correction.get("sentence_index", 0)
     index_label = tk.Label(
         header_frame, text=str(sentence_index + 1), font=("Arial", 10),
         fg="white", bg="#28a745", width=3, height=1,
     )
+    index_label._keep_bg = True
     index_label.pack(side=tk.LEFT)
 
     original_chunk = correction.get("original_chunk", "")
     corrected_chunk = correction.get("corrected_chunk", "")
 
-    text_widget = create_diff_widget(tile, original_chunk, corrected_chunk)
+    text_widget = create_diff_widget(body, original_chunk, corrected_chunk)
+    text_widget._keep_bg = True
 
-    for widget in (tile, header_frame, index_label, text_widget):
-        widget.bind("<Button-1>", lambda e, c=correction: on_click(c))
-        widget.configure(cursor="hand2")
+    tile.bind_click(lambda c=correction: on_click(c))
 
     return tile
+
+
+# ─── Прочее ──────────────────────────────────────────────────────────────
 
 
 def set_toggle_button_state(btn: tk.Button, is_active: bool) -> None:
     """Покрасить кнопку как toggle: зелёный = активна, серый = неактивна."""
     if is_active:
-        btn.config(bg="#28a745", fg="white", activebackground="#1e7e34", activeforeground="white")
+        btn.config(
+            bg="#28a745", fg="white",
+            activebackground="#1e7e34", activeforeground="white",
+        )
     else:
-        btn.config(bg="#f0f0f0", fg="#333333", activebackground="#d0d0d0", activeforeground="#333333")
+        btn.config(
+            bg="#f0f0f0", fg="#333333",
+            activebackground="#d0d0d0", activeforeground="#333333",
+        )
 
 
 def set_toggle_button_mixed(btn: tk.Button) -> None:
-    """Промежуточное состояние toggle-кнопки (часть подкнопок активна)."""
-    btn.config(bg="#3a82f7", fg="white", activebackground="#1f5fc9", activeforeground="white")
+    """Промежуточное состояние toggle-кнопки."""
+    btn.config(
+        bg="#3a82f7", fg="white",
+        activebackground="#1f5fc9", activeforeground="white",
+    )
 
 
 def insert_deleted_text(text_widget, text):
-    """Вставить удалённый текст: буквы с overstrike, пунктуация без.
-
-    Args:
-        text_widget: Виджет Text.
-        text: Текст для вставки.
-    """
+    """Вставить удалённый текст: буквы с overstrike, пунктуация без."""
     for char in text:
         if char in PUNCTUATION:
             text_widget.insert("end", char, "removed_punct")

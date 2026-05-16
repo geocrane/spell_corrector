@@ -68,8 +68,8 @@ def _resolve_parent_bg(parent) -> str:
     return RIBBON_BG
 
 
-def _draw_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
-    """Рисует скругленный прямоугольник на Canvas."""
+def draw_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+    """Рисует скругленный прямоугольник на Canvas (публичная функция)."""
     # Для Tkinter polygon скругление работает через дублирование точек и smooth=True
     points = [
         x1 + radius, y1,
@@ -94,6 +94,10 @@ def _draw_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
         x1, y1,
     ]
     return canvas.create_polygon(points, **kwargs, smooth=True)
+
+
+# Алиас для обратной совместимости внутри модуля
+_draw_rounded_rect = draw_rounded_rect
 
 
 class _RibbonBase(tk.Canvas):
@@ -133,6 +137,14 @@ class _RibbonBase(tk.Canvas):
         self._gap = style.get("ribbon", config_key, "gap")
         self._min_height = style.get("ribbon", config_key, "min_height", default=0) or 0
         self._radius = style.get("ribbon", "border_radius")
+        # Фиксированный размер кнопки и коробка PNG — для унификации габаритов
+        # в группе. icon_box подменяет переданный icon_size (PNG растягивается
+        # деформирующим resize до icon_box × icon_box в ui/icons.py).
+        self._fixed_w = style.get("ribbon", config_key, "fixed_width", default=None)
+        self._fixed_h = style.get("ribbon", config_key, "fixed_height", default=None)
+        self._icon_box = style.get(
+            "ribbon", config_key, "icon_box", default=icon_size,
+        )
 
         if compact:
             self._font = RIBBON_FONT_SM
@@ -159,8 +171,8 @@ class _RibbonBase(tk.Canvas):
         # так как мы будем менять её BG синхронно с заливкой канваса.
         self._inner = tk.Frame(self, bd=0, bg=self._parent_bg)
 
-        # Иконка
-        photo = icons.get_icon(self._icon_key, self._icon_size)
+        # Иконка — берём размер из icon_box (фикс-коробка по конфигу)
+        photo = icons.get_icon(self._icon_key, self._icon_box)
         self._photo = photo
 
         if photo is not None:
@@ -188,6 +200,12 @@ class _RibbonBase(tk.Canvas):
             bd=0,
             bg=self._parent_bg,
         )
+        # При фиксированной ширине ограничиваем перенос текста, чтобы inner
+        # не вылезал за Canvas. wraplength = fixed_width - 2*outer_padx.
+        if self._fixed_w:
+            self._text_label.config(
+                wraplength=max(1, self._fixed_w - self._outer_padx * 2),
+            )
 
         # Раскладка
         if self._orient == "vertical":
@@ -204,19 +222,30 @@ class _RibbonBase(tk.Canvas):
         )
 
     def _on_canvas_resize(self, _event=None):
-        # Подогнать размер Canvas под inner + padding.
-        # Для compact-кнопок применяем min_height — чтобы кнопки в одной
-        # группе имели одинаковую высоту независимо от пропорций иконок.
+        # Фиксированные размеры из конфига дают одинаковый размер для всех
+        # кнопок одной категории (compact / normal) независимо от длины
+        # текста и пропорций PNG. Fallback на inner_w/h + padding оставлен
+        # на случай, если fixed_* отсутствуют в конфиге.
         inner_w = self._inner.winfo_reqwidth()
         inner_h = self._inner.winfo_reqheight()
-        w = inner_w + self._outer_padx * 2
-        h = max(inner_h + self._outer_pady * 2, self._min_height)
+        w = self._fixed_w if self._fixed_w else inner_w + self._outer_padx * 2
+        if self._fixed_h:
+            h = self._fixed_h
+        else:
+            h = max(inner_h + self._outer_pady * 2, self._min_height)
         self.config(width=w, height=h)
-        # Центрируем inner по вертикали и горизонтали
-        x = (w - inner_w) // 2
+        # Центрируем inner по вертикали и горизонтали относительно Canvas
+        avail_w = w - self._outer_padx * 2
+        x = max(self._outer_padx, (w - inner_w) // 2)
         y = (h - inner_h) // 2
         self.coords(self._inner_window, x, y)
-        # _redraw будет вызван из _apply_visual
+        # Если inner шире доступной зоны — ограничиваем, чтобы не вылезал за Canvas
+        if inner_w > avail_w:
+            self.itemconfig(self._inner_window, width=avail_w)
+        # Перерисовать фон с правильными размерами — необходимо при первом
+        # Configure-событии, когда размеры виджета становятся реальными
+        # (в __init__ winfo_width() == 1, _redraw ничего не рисует).
+        self._apply_visual()
 
     def _redraw(self, bg=None, border=None):
         """Перерисовать скругленный фон."""
@@ -330,7 +359,7 @@ class _RibbonBase(tk.Canvas):
 
     def set_icon(self, icon_key: str, state: str = "normal"):
         self._icon_key = icon_key
-        photo = icons.get_icon(icon_key, self._icon_size, state=state)
+        photo = icons.get_icon(icon_key, self._icon_box, state=state)
         self._photo = photo
         if photo is not None:
             self._icon_label.config(image=photo, text="")

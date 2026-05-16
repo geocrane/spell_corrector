@@ -36,14 +36,24 @@
       "outer_padx": 4,
       "outer_pady": 3,
       "gap": 2,
-      "min_height": 50
+      "min_height": 50,
+      "fixed_width": 70,
+      "fixed_height": 54,
+      "icon_box": 22
     },
     "normal": {
       "outer_padx": 8,
       "outer_pady": 4,
       "gap": 3,
-      "min_height": 100
+      "min_height": 100,
+      "fixed_width": 92,
+      "fixed_height": 96,
+      "icon_box": 56
     },
     "border_radius": 4
+  },
+  "tile": {
+    "border_radius": 6,
+    "padding": 8
   }
 }

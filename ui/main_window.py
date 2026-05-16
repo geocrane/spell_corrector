@@ -16,7 +16,15 @@ from tkinter import ttk
 import office_finder
 from core.providers import get_all_providers
 from ui import icons
-from ui.constants import SPINNER_FRAMES, SPINNER_DELAY
+from ui.constants import (
+    SPINNER_FRAMES,
+    SPINNER_DELAY,
+    RIBBON_BG,
+    RIBBON_NORMAL_FG,
+    RIBBON_TOGGLE_MIXED_BG,
+    RIBBON_TOGGLE_ON_BORDER,
+    RIBBON_FONT_FAMILY,
+)
 from ui.ribbon import RibbonButton, RibbonToggle
 from ui.tiles import (
     create_document_tile,
@@ -58,6 +66,9 @@ def get_active_monitor_workarea():
         return {"x": 0, "y": 0, "width": 1920, "height": 1080}
 
 
+APP_WIDTH = 470  # ширина бокового окна; Word открывается на monitor_width - APP_WIDTH
+
+
 class MainWindow(tk.Tk):
     """Главное окно приложения. Управляет UI, все вызовы бизнес-логики делегирует в Engine."""
 
@@ -66,7 +77,7 @@ class MainWindow(tk.Tk):
 
         self.engine = engine
         self.title("Корректор орфографии")
-        self.geometry("350x500")
+        self.geometry(f"{APP_WIDTH}x500")
         self.resizable(True, True)
 
         self._position_on_active_monitor()
@@ -85,6 +96,13 @@ class MainWindow(tk.Tk):
         self._extraction_in_progress = False  # блокировка «Назад» во время извлечения
         self.errors_tiles = []  # [(correction, tile_frame), ...] для режима ошибок
         self.revisions_mode_var = tk.BooleanVar(value=False)
+
+        # Overlay-индикатор унификации форматирования (ленивая инициализация)
+        self._unify_overlay = None
+        self._unify_spinner = None
+        self._unify_spinner_index = 0
+        self._unify_spinner_job = None
+        self._all_toolbar_buttons = []
 
         # Конфигурация
         self._config = engine.get_config()
@@ -251,7 +269,7 @@ class MainWindow(tk.Tk):
     def _position_on_active_monitor(self):
         """Разместить окно справа на активном мониторе."""
         self.monitor = get_active_monitor_workarea()
-        win_width = 350
+        win_width = APP_WIDTH
         win_height = self.monitor["height"] - 40
         x = self.monitor["x"] + self.monitor["width"] - win_width
         y = self.monitor["y"]
@@ -431,6 +449,16 @@ class MainWindow(tk.Tk):
             initial_state="on" if self.revisions_mode_var.get() else "off",
         )
 
+        # Перечень всех кнопок toolbar — для массовой блокировки/разблокировки
+        # во время долгих операций (например, унификация форматирования).
+        self._all_toolbar_buttons = [
+            self.find_button, self.back_button,
+            self.check_button, self.check_selection_button,
+            self.format_all_btn, *self.format_buttons.values(),
+            self.auditor_toggle, self.skip_tables_toggle,
+            self.hide_clean_toggle, self.errors_mode_button, self.revisions_toggle,
+        ]
+
         # Фрейм выбора адаптера
         self.adapter_frame = ttk.Frame(self)
         ttk.Label(self.adapter_frame, text="Адаптер:").pack(side=tk.LEFT, padx=(0, 5))
@@ -529,7 +557,7 @@ class MainWindow(tk.Tk):
             self.back_button.set_command(self._exit_errors_view)
             self.back_button.set_enabled(True)
             self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
-            self.revisions_toggle.pack(in_=self.primary_row, side=tk.RIGHT)
+            self.revisions_toggle.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 4))
             self._refresh_revisions_toggle()
         else:  # sentences
             extracting = self._extraction_in_progress
@@ -539,7 +567,7 @@ class MainWindow(tk.Tk):
             self.back_button.set_enabled(not extracting)
             self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
             self.hide_clean_toggle.pack(in_=self.primary_row, side=tk.LEFT, padx=4)
-            self.errors_mode_button.pack(in_=self.primary_row, side=tk.RIGHT)
+            self.errors_mode_button.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 4))
             self._refresh_errors_mode_button()
             self._refresh_hide_clean_toggle()
 
@@ -588,8 +616,96 @@ class MainWindow(tk.Tk):
             target = "mixed"
         self.format_all_btn.set_state(target)
 
+    def _toolbar_set_busy(self, busy: bool):
+        """Заблокировать/разблокировать toolbar на время долгой операции.
+
+        При busy=True все кнопки toolbar переводятся в disabled. При busy=False
+        состояния восстанавливаются штатными _refresh_* (которые пересчитывают
+        их из engine), плюс _update_button_state — чтобы режимы sentences/errors
+        вернули свои set_enabled.
+        """
+        if busy:
+            for btn in self._all_toolbar_buttons:
+                if isinstance(btn, RibbonToggle):
+                    btn.set_state("disabled")
+                else:  # RibbonButton
+                    btn.set_enabled(False)
+            return
+
+        # Восстановление: сначала пересчёт состояний из engine, потом
+        # _update_button_state для перепаковки/скрытия по текущему view.
+        self._refresh_check_buttons()
+        self._refresh_format_unify_panel()
+        self._refresh_doc_dependent_options()
+        self._refresh_doc_options_toggles()
+        self._update_button_state()
+
+    def _show_unify_overlay(self):
+        """Показать overlay поверх scrollable-области с анимированным спиннером."""
+        if self._unify_overlay is None:
+            self._unify_overlay = tk.Frame(
+                self.canvas, bg=RIBBON_TOGGLE_MIXED_BG, bd=0,
+            )
+            inner = tk.Frame(self._unify_overlay, bg=RIBBON_TOGGLE_MIXED_BG)
+            inner.place(relx=0.5, rely=0.5, anchor="center")
+            self._unify_spinner = tk.Label(
+                inner, text=SPINNER_FRAMES[0],
+                font=(RIBBON_FONT_FAMILY, 28),
+                bg=RIBBON_TOGGLE_MIXED_BG, fg=RIBBON_TOGGLE_ON_BORDER,
+            )
+            self._unify_spinner.pack(pady=(0, 10))
+            tk.Label(
+                inner, text="Идёт унификация форматирования…",
+                font=(RIBBON_FONT_FAMILY, 11),
+                bg=RIBBON_TOGGLE_MIXED_BG, fg=RIBBON_NORMAL_FG,
+            ).pack()
+        self._unify_overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        self._unify_overlay.lift()
+        self._unify_spinner_index = 0
+        if self._unify_spinner_job is not None:
+            try:
+                self.after_cancel(self._unify_spinner_job)
+            except Exception:
+                pass
+        self._unify_spinner_job = self.after(
+            SPINNER_DELAY, self._animate_unify_spinner,
+        )
+
+    def _animate_unify_spinner(self):
+        if (
+            self._unify_overlay is not None
+            and self._unify_overlay.winfo_ismapped()
+            and self._unify_spinner is not None
+        ):
+            self._unify_spinner_index = (
+                self._unify_spinner_index + 1
+            ) % len(SPINNER_FRAMES)
+            self._unify_spinner.config(
+                text=SPINNER_FRAMES[self._unify_spinner_index]
+            )
+            self._unify_spinner_job = self.after(
+                SPINNER_DELAY, self._animate_unify_spinner,
+            )
+        else:
+            self._unify_spinner_job = None
+
+    def _hide_unify_overlay(self):
+        if self._unify_spinner_job is not None:
+            try:
+                self.after_cancel(self._unify_spinner_job)
+            except Exception:
+                pass
+            self._unify_spinner_job = None
+        if self._unify_overlay is not None:
+            self._unify_overlay.place_forget()
+
     def _on_format_toggle(self, attr: str):
-        """Клик по одной из кнопок Шрифт/Размер/Стиль."""
+        """Клик по одной из кнопок Шрифт/Размер/Стиль.
+
+        На время COM-вызова блокируем весь toolbar и показываем overlay
+        со спиннером — операция блокирующая, и без явного индикатора
+        пользователь принимает зависание за «зависший интерфейс».
+        """
         if not self.engine.selected_doc:
             return
         method = {
@@ -599,29 +715,30 @@ class MainWindow(tk.Tk):
         }.get(attr)
         if method is None:
             return
-        tg = self.format_buttons.get(attr)
-        if tg:
-            tg.set_state("disabled")
-        self.status_label.config(text="⏳ Унификация форматирования...")
-        self.update_idletasks()
+        self._toolbar_set_busy(True)
+        self._show_unify_overlay()
+        self.status_label.config(text="⏳ Унификация форматирования…")
+        # Полная перерисовка — overlay и спиннер должны появиться ДО COM-вызова
+        self.update()
         try:
             method()
         finally:
-            self._refresh_format_unify_panel()
+            self._hide_unify_overlay()
+            self._toolbar_set_busy(False)
 
     def _on_format_toggle_all(self):
         """Клик по «Применить всё»."""
         if not self.engine.selected_doc:
             return
-        self.format_all_btn.set_state("disabled")
-        for tg in self.format_buttons.values():
-            tg.set_state("disabled")
-        self.status_label.config(text="⏳ Унификация форматирования...")
-        self.update_idletasks()
+        self._toolbar_set_busy(True)
+        self._show_unify_overlay()
+        self.status_label.config(text="⏳ Унификация форматирования…")
+        self.update()
         try:
             self.engine.toggle_unify_all()
         finally:
-            self._refresh_format_unify_panel()
+            self._hide_unify_overlay()
+            self._toolbar_set_busy(False)
 
     def _on_format_state_changed(self, attr, is_active, invalidated=False):
         def _update():
@@ -823,7 +940,7 @@ class MainWindow(tk.Tk):
         self._refresh_format_unify_panel()
         self._highlight_selected_tile_ui()
 
-        app_width = 350
+        app_width = APP_WIDTH
         target_rect = (
             self.monitor["x"],
             self.monitor["y"],
@@ -989,7 +1106,7 @@ class MainWindow(tk.Tk):
                 text=f"⚠ Не удалось найти предложение #{index + 1}"
             )
 
-        app_width = 350
+        app_width = APP_WIDTH
         target_rect = (
             self.monitor["x"],
             self.monitor["y"],
@@ -1215,7 +1332,7 @@ class MainWindow(tk.Tk):
             self.status_label.config(text="⚠ Не удалось найти правку в документе")
             return
 
-        app_width = 350
+        app_width = APP_WIDTH
         target_rect = (
             self.monitor["x"],
             self.monitor["y"],
