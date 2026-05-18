@@ -145,7 +145,7 @@ class ExcelProvider(DocumentProvider):
         docs: list[dict] = []
         try:
             hwnd = app.Hwnd
-        except pywintypes.com_error:
+        except (pywintypes.com_error, AttributeError):
             hwnd = 0
 
         try:

@@ -22,7 +22,6 @@ __all__ = [
     "get_all_providers",
     "find_all_documents",
     "WordProvider",
-    "OutlookProvider",
     "ExcelProvider",
 ]
 
@@ -34,11 +33,9 @@ def _ensure_registered():
         return
     # Импорты только когда реально нужны
     from core.providers.word_provider import WordProvider
-    from core.providers.outlook_provider import OutlookProvider
     from core.providers.excel_provider import ExcelProvider
 
     register_provider(WordProvider())
-    register_provider(OutlookProvider())
     register_provider(ExcelProvider())
     _registered = True
 
