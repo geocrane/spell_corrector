@@ -65,11 +65,21 @@ class DocumentProvider(ABC):
         ...
 
     @abstractmethod
-    def extract_sentences(self, doc: dict) -> list[dict]:
+    def extract_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> list[dict]:
         """Извлечь предложения/фрагменты из документа.
 
         Args:
             doc: Словарь документа.
+            progress_callback: Опциональный колбэк (extracted: int, processed: int | None)
+                — провайдер вызывает периодически. Используется для индикатора прогресса.
+            cancel_event: threading.Event. Если установлен — провайдер должен прервать
+                обход и вернуть уже накопленные результаты (или пустой список).
 
         Returns:
             List[dict]: Список фрагментов с ключами:
@@ -83,11 +93,19 @@ class DocumentProvider(ABC):
         ...
 
     @abstractmethod
-    def extract_selected_sentences(self, doc: dict) -> Optional[list[dict]]:
+    def extract_selected_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> Optional[list[dict]]:
         """Извлечь предложения из выделенного фрагмента.
 
         Args:
             doc: Словарь документа.
+            progress_callback: См. extract_sentences.
+            cancel_event: См. extract_sentences.
 
         Returns:
             List[dict] или None если нет выделения.
@@ -198,8 +216,19 @@ class DocumentProvider(ABC):
 
     # ─── Унификация форматирования (опционально) ────────────────────────
 
-    def analyze_format(self, doc: dict) -> Optional[dict]:
+    def analyze_format(
+        self, doc: dict, *, cancel_event=None, progress_callback=None,
+    ) -> Optional[dict]:
         """Проанализировать форматирование и вернуть преобладающие значения.
+
+        Args:
+            cancel_event: threading.Event. Если .set() — провайдер должен
+                прервать обход документа. Накопленные счётчики возвращаются
+                как есть; caller сам решит, использовать частичный результат
+                или отбросить (по проверке cancel_event.is_set() после вызова).
+            progress_callback: callable(processed, total). Дёргается из цикла
+                анализа на каждом шаге, чтобы UI смог обработать клик
+                «Остановить» во время синхронного COM-вызова.
 
         Returns:
             dict с ключами dominant_font_name, dominant_font_size,
@@ -209,7 +238,13 @@ class DocumentProvider(ABC):
         return None
 
     def apply_format_uniform(
-        self, doc: dict, attr: str, target_value: Any = None,
+        self,
+        doc: dict,
+        attr: str,
+        target_value: Any = None,
+        *,
+        cancel_event=None,
+        progress_callback=None,
     ) -> Optional[dict]:
         """Применить преобладающее значение атрибута ко всему основному тексту.
 
@@ -218,6 +253,13 @@ class DocumentProvider(ABC):
             attr: "font_name" | "font_size" | "style".
             target_value: Конкретное значение или None (тогда провайдер сам
                           считает преобладающее через analyze_format).
+            cancel_event: threading.Event. Если .set() — провайдер должен
+                прервать главный цикл применения на ближайшей точке проверки.
+                Уже совершённые правки остаются в snapshot и откатываются
+                обычным restore_format.
+            progress_callback: callable(processed, total). Дёргается из
+                цикла применения каждые ~N единиц, чтобы UI смог обработать
+                клик «Остановить» во время синхронного COM-вызова.
 
         Returns:
             Лёгкий дескриптор snapshot для последующего restore_format, либо

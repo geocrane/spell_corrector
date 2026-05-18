@@ -20,6 +20,8 @@ Engine — бизнес-логика приложения.
 События (генерирует Engine, подписывается UI):
     documents_found(documents)
     documents_not_found()
+    extraction_started()
+    extraction_progress(extracted, processed)
     check_started(total)
     sentence_start(index)
     sentence_checked(index, original, corrected, has_error)
@@ -105,6 +107,10 @@ class Engine:
         # Кэш analyze_format для текущего документа — заполняется лениво при
         # первом toggle_unify_*. Инвалидируется при правках текста.
         self.format_stats_cache: Optional[dict] = None
+        # Event для прерывания текущего извлечения (см. cancel_extraction).
+        self._extract_cancel_event: Optional[threading.Event] = None
+        # Event для прерывания идущей унификации форматирования (см. cancel_unify).
+        self._unify_cancel_event: Optional[threading.Event] = None
 
     @staticmethod
     def _make_default_format_state() -> dict:
@@ -189,9 +195,9 @@ class Engine:
         """Общая логика запуска проверки.
 
         Сначала переключает UI (событие extraction_started), затем извлекает
-        предложения синхронно. Пользователь видит пустой экран со статусом
-        «Извлечение...» — UI может зависнуть на 0.5-2 сек (COM-операция),
-        но пользователю нечего делать в этот момент.
+        предложения синхронно. Провайдер вызывает progress_callback каждые
+        ~25 ячеек — это эмитит extraction_progress, UI обновляет overlay и
+        форсирует перерисовку, чтобы кнопка «Остановить» оставалась отзывчивой.
 
         Args:
             extract_func: Функция извлечения предложений.
@@ -210,7 +216,24 @@ class Engine:
         # Мгновенно переключаем UI
         self.events.emit("extraction_started")
 
-        sentences = extract_func(self.selected_doc)
+        self._extract_cancel_event = threading.Event()
+
+        def _on_progress(extracted, processed):
+            self.events.emit(
+                "extraction_progress",
+                extracted=extracted, processed=processed,
+            )
+
+        sentences = extract_func(
+            self.selected_doc,
+            progress_callback=_on_progress,
+            cancel_event=self._extract_cancel_event,
+        )
+
+        if self._extract_cancel_event.is_set():
+            self.is_checking = False
+            self.events.emit("check_error", error="Извлечение остановлено")
+            return
 
         if sentences is None:
             self.is_checking = False
@@ -224,6 +247,23 @@ class Engine:
             return
 
         self._run_check(sentences)
+
+    def cancel_extraction(self):
+        """Остановить идущее извлечение предложений (если оно идёт)."""
+        ev = getattr(self, "_extract_cancel_event", None)
+        if ev is not None:
+            ev.set()
+
+    def cancel_unify(self):
+        """Остановить идущую унификацию форматирования (если она идёт).
+
+        Уже применённые сегменты сохраняются в snapshot — кнопка унификации
+        останется в положении «вкл», повторный клик откатит частичные правки
+        через restore_snapshot.
+        """
+        ev = getattr(self, "_unify_cancel_event", None)
+        if ev is not None:
+            ev.set()
 
     def check_document(self):
         """Запустить проверку всего документа."""
@@ -546,6 +586,8 @@ class Engine:
 
         Если хоть одна унификация активна — откатываем все три в обратном
         порядке. Иначе — применяем все три подряд (font → size → style).
+        Между атрибутами проверяем флаг отмены, чтобы клик «Остановить»
+        прервал не только текущий attr, но и весь оставшийся каскад.
         """
         if not self.selected_doc:
             return
@@ -556,6 +598,9 @@ class Engine:
                     self._toggle_unify(attr)
         else:
             for attr in ("font_name", "font_size", "style"):
+                ev = self._unify_cancel_event
+                if ev is not None and ev.is_set():
+                    break
                 if not self.format_state[attr]["is_active"]:
                     self._toggle_unify(attr)
 
@@ -578,13 +623,29 @@ class Engine:
             )
             return
 
-        # Применить унификацию.
+        # Применить унификацию. Cancel-event и progress callback создаём
+        # ДО analyze_format — он тоже долгий и должен прерываться по «Остановить».
+        self._unify_cancel_event = threading.Event()
+
+        def _on_unify_progress(processed, total):
+            self.events.emit("unify_progress", processed=processed, total=total)
+
         if self.format_stats_cache is None:
             try:
-                self.format_stats_cache = office_finder.analyze_format(self.selected_doc)
+                stats = office_finder.analyze_format(
+                    self.selected_doc,
+                    cancel_event=self._unify_cancel_event,
+                    progress_callback=_on_unify_progress,
+                )
             except Exception as e:
                 logger.error("toggle_unify: analyze_format error: %s", e)
-                self.format_stats_cache = None
+                stats = None
+            if self._unify_cancel_event.is_set():
+                # analyze был прерван — частичные счётчики не кэшируем,
+                # состояние кнопки не меняем (остаётся выкл).
+                self.events.emit("format_state_changed", attr=attr, is_active=False)
+                return
+            self.format_stats_cache = stats
         if not self.format_stats_cache:
             self.events.emit("format_state_changed", attr=attr, is_active=False)
             return
@@ -598,6 +659,8 @@ class Engine:
         try:
             descriptor = office_finder.apply_format_uniform(
                 self.selected_doc, attr, target,
+                cancel_event=self._unify_cancel_event,
+                progress_callback=_on_unify_progress,
             )
         except Exception as e:
             logger.error("toggle_unify: apply_format_uniform error: %s", e)

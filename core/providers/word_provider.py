@@ -458,7 +458,13 @@ class WordProvider(DocumentProvider):
         except Exception:
             pass
 
-    def extract_sentences(self, doc: dict) -> list[dict]:
+    def extract_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> list[dict]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
             return []
@@ -466,9 +472,20 @@ class WordProvider(DocumentProvider):
         body_start = _find_body_start(doc_com)
         if body_start > 0:
             sentences = [s for s in sentences if s["range_start"] >= body_start]
+        if progress_callback is not None:
+            try:
+                progress_callback(len(sentences), None)
+            except Exception:
+                pass
         return sentences
 
-    def extract_selected_sentences(self, doc: dict) -> Optional[list[dict]]:
+    def extract_selected_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> Optional[list[dict]]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
             return None
@@ -496,6 +513,11 @@ class WordProvider(DocumentProvider):
             for i, s in enumerate(selected):
                 s["index"] = i
 
+            if progress_callback is not None:
+                try:
+                    progress_callback(len(selected), None)
+                except Exception:
+                    pass
             return selected
         except Exception as e:
             logger.warning("extract_selected_sentences failed: %s", e)
@@ -766,19 +788,32 @@ class WordProvider(DocumentProvider):
 
     # ─── Унификация форматирования ────────────────────────────────────────
 
-    def analyze_format(self, doc: dict) -> Optional[dict]:
+    def analyze_format(
+        self, doc: dict, *, cancel_event=None, progress_callback=None,
+    ) -> Optional[dict]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
             return None
         try:
-            stats = format_unifier.analyze_format(doc_com, skip_heading_styles=True)
+            stats = format_unifier.analyze_format(
+                doc_com,
+                skip_heading_styles=True,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
         except Exception as e:
             logger.error("analyze_format error: %s", e)
             return None
         return asdict(stats)
 
     def apply_format_uniform(
-        self, doc: dict, attr: str, target_value: Any = None,
+        self,
+        doc: dict,
+        attr: str,
+        target_value: Any = None,
+        *,
+        cancel_event=None,
+        progress_callback=None,
     ) -> Optional[dict]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
@@ -787,9 +822,16 @@ class WordProvider(DocumentProvider):
         coverage = None
         if target_value is None:
             try:
-                stats = format_unifier.analyze_format(doc_com, skip_heading_styles=True)
+                stats = format_unifier.analyze_format(
+                    doc_com,
+                    skip_heading_styles=True,
+                    cancel_event=cancel_event,
+                    progress_callback=progress_callback,
+                )
             except Exception as e:
                 logger.error("apply_format_uniform: analyze failed: %s", e)
+                return None
+            if cancel_event is not None and cancel_event.is_set():
                 return None
             if attr == "font_name":
                 target_value = stats.dominant_font_name
@@ -805,7 +847,10 @@ class WordProvider(DocumentProvider):
 
         try:
             snap = format_unifier.apply_unified_attribute(
-                doc_com, attr, target_value, skip_heading_styles=True,
+                doc_com, attr, target_value,
+                skip_heading_styles=True,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.error("apply_format_uniform error: %s", e)

@@ -192,7 +192,13 @@ class ExcelProvider(DocumentProvider):
 
     # ─── Извлечение предложений ────────────────────────────────────────
 
-    def extract_sentences(self, doc: dict) -> list[dict]:
+    def extract_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> list[dict]:
         """Извлечь предложения из всех видимых текстовых ячеек книги."""
         wb = doc.get("workbook")
         if wb is None:
@@ -211,6 +217,8 @@ class ExcelProvider(DocumentProvider):
             return []
 
         for sheet in sheets:
+            if cancel_event is not None and cancel_event.is_set():
+                break
             try:
                 if sheet.Visible != XL_SHEET_VISIBLE:
                     continue
@@ -220,13 +228,22 @@ class ExcelProvider(DocumentProvider):
                 sheet_name = sheet.Name
             except pywintypes.com_error:
                 continue
-            self._extract_from_sheet(workbook_name, sheet, sheet_name, sentences)
+            self._extract_from_sheet(
+                workbook_name, sheet, sheet_name, sentences,
+                progress_callback=progress_callback, cancel_event=cancel_event,
+            )
 
         for i, s in enumerate(sentences):
             s["index"] = i
         return sentences
 
-    def extract_selected_sentences(self, doc: dict) -> Optional[list[dict]]:
+    def extract_selected_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> Optional[list[dict]]:
         """Извлечь предложения из выделенных ячеек."""
         wb = doc.get("workbook")
         app = doc.get("application")
@@ -245,28 +262,46 @@ class ExcelProvider(DocumentProvider):
 
         sentences: list[dict] = []
         for i in range(1, areas_count + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             try:
                 area = sel.Areas(i)
                 sheet = area.Worksheet
                 sheet_name = sheet.Name
             except pywintypes.com_error:
                 continue
-            self._extract_from_range(workbook_name, sheet, sheet_name, area, sentences)
+            self._extract_from_range(
+                workbook_name, sheet, sheet_name, area, sentences,
+                progress_callback=progress_callback, cancel_event=cancel_event,
+            )
 
         for i, s in enumerate(sentences):
             s["index"] = i
         return sentences
 
-    def _extract_from_sheet(self, workbook_name, sheet, sheet_name, sentences_out):
+    def _extract_from_sheet(
+        self, workbook_name, sheet, sheet_name, sentences_out,
+        *, progress_callback=None, cancel_event=None,
+    ):
         """Обойти UsedRange листа и накопить предложения."""
         try:
             used = sheet.UsedRange
         except pywintypes.com_error:
             return
-        self._extract_from_range(workbook_name, sheet, sheet_name, used, sentences_out)
+        self._extract_from_range(
+            workbook_name, sheet, sheet_name, used, sentences_out,
+            progress_callback=progress_callback, cancel_event=cancel_event,
+        )
 
-    def _extract_from_range(self, workbook_name, sheet, sheet_name, rng, sentences_out):
-        """Обойти ячейки в произвольном Range и накопить предложения."""
+    def _extract_from_range(
+        self, workbook_name, sheet, sheet_name, rng, sentences_out,
+        *, progress_callback=None, cancel_event=None,
+    ):
+        """Обойти ячейки в произвольном Range и накопить предложения.
+
+        Каждые PROGRESS_INTERVAL ячеек вызывает progress_callback и проверяет
+        cancel_event — это даёт UI шанс перерисоваться и обработать клик «Остановить».
+        """
         try:
             cells_count = rng.Cells.Count
             if cells_count == 0:
@@ -284,11 +319,28 @@ class ExcelProvider(DocumentProvider):
         except pywintypes.com_error:
             return
 
+        PROGRESS_INTERVAL = 25
+        processed = 0
+
         try:
             for cell in cells_iter:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
                 self._extract_from_cell(workbook_name, sheet_name, cell, sheet_protected, sentences_out)
+                processed += 1
+                if progress_callback is not None and processed % PROGRESS_INTERVAL == 0:
+                    try:
+                        progress_callback(len(sentences_out), processed)
+                    except Exception:
+                        logger.exception("progress_callback failed")
         except pywintypes.com_error as e:
             logger.warning("Ошибка обхода ячеек: %s", e)
+        finally:
+            if progress_callback is not None and processed > 0:
+                try:
+                    progress_callback(len(sentences_out), processed)
+                except Exception:
+                    pass
 
     def _extract_from_cell(self, workbook_name, sheet_name, cell, sheet_protected, sentences_out):
         """Извлечь предложения из одной ячейки (если она проходит фильтры)."""
@@ -785,7 +837,9 @@ class ExcelProvider(DocumentProvider):
             return None
         return None
 
-    def analyze_format(self, doc: dict) -> Optional[dict]:
+    def analyze_format(
+        self, doc: dict, *, cancel_event=None, progress_callback=None,
+    ) -> Optional[dict]:
         wb = doc.get("workbook")
         if wb is None:
             return None
@@ -851,7 +905,13 @@ class ExcelProvider(DocumentProvider):
         return result
 
     def apply_format_uniform(
-        self, doc: dict, attr: str, target_value: Any = None,
+        self,
+        doc: dict,
+        attr: str,
+        target_value: Any = None,
+        *,
+        cancel_event=None,
+        progress_callback=None,
     ) -> Optional[dict]:
         if attr not in ("font_name", "font_size", "style"):
             return None

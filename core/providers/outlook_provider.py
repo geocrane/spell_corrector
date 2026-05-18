@@ -74,15 +74,32 @@ class OutlookProvider(DocumentProvider):
         except Exception:
             pass
 
-    def extract_sentences(self, doc: dict) -> list[dict]:
+    def extract_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> list[dict]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
             return []
         # WordEditor — тот же Word API, но без _find_body_start
         sentences = _extract_sentences_from_doc(doc_com)
+        if progress_callback is not None:
+            try:
+                progress_callback(len(sentences), None)
+            except Exception:
+                pass
         return sentences
 
-    def extract_selected_sentences(self, doc: dict) -> Optional[list[dict]]:
+    def extract_selected_sentences(
+        self,
+        doc: dict,
+        *,
+        progress_callback=None,
+        cancel_event=None,
+    ) -> Optional[list[dict]]:
         doc_com = self.get_doc_com(doc)
         if doc_com is None:
             return None
@@ -110,6 +127,11 @@ class OutlookProvider(DocumentProvider):
             for i, s in enumerate(selected):
                 s["index"] = i
 
+            if progress_callback is not None:
+                try:
+                    progress_callback(len(selected), None)
+                except Exception:
+                    pass
             return selected
         except Exception as e:
             logger.warning("extract_selected_sentences failed: %s", e)

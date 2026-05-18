@@ -154,32 +154,146 @@ def test_yo_allows_unrelated_changes():
     assert "Серьёзный" in out or "Серьезный" in out  # ё/е здесь правомерно
 
 
-# ─── _suppress_colon_insertion ─────────────────────────────────────────────
+# ─── _protect_colons ───────────────────────────────────────────────────────
 
 def test_colon_insertion_suppressed():
+    """Модель добавила `:` — откатываем (в оригинале его не было)."""
     orig = "Документ подписан стороны согласны."
     corr = "Документ подписан: стороны согласны."
-    out = sc._suppress_colon_insertion(orig, corr)
+    out = sc._protect_colons(orig, corr)
     assert ":" not in out
 
 
 def test_colon_kept_if_was_in_original():
+    """Двоеточие из оригинала сохраняется."""
     orig = "Документ: подписан."
     corr = "Документ: подписан, проверен."
-    out = sc._suppress_colon_insertion(orig, corr)
+    out = sc._protect_colons(orig, corr)
     assert ":" in out
 
 
-def test_colon_insertion_BUG_collateral_loss():
-    """ГИПОТЕЗА БАГА: при ':' в replace-блоке теряются полезные правки внутри блока."""
+def test_colon_deletion_restored():
+    """Модель удалила `:` посередине — восстанавливаем."""
+    orig = "В договоре: два контроллера."
+    corr = "В договоре два контроллера."
+    out = sc._protect_colons(orig, corr)
+    assert ":" in out
+    assert out.count(":") == 1
+
+
+def test_colon_addressing_not_added():
+    """«Комментарии в приложении, лист 3» — `:` не добавляется."""
+    orig = "Комментарии в приложении, лист 3"
+    corr = "Комментарии в приложении: лист 3"
+    out = sc._protect_colons(orig, corr)
+    assert ":" not in out
+
+
+def test_colon_collateral_word_fixes_preserved():
+    """При insert `:` рядом с другими правками — слова сохраняются."""
     orig = "Иванов сказал отчёт готовко сдаче."
     corr = "Иванов сказал: отчёт готов к сдаче."
-    out = sc._suppress_colon_insertion(orig, corr)
-    # Если суппрессия чрезмерна — пропадёт «готов к сдаче» (вместе с двоеточием)
-    # Документируем фактическое поведение:
-    if "готов к сдаче" not in out:
-        pytest.skip("ПОДТВЕРЖДЁН БАГ: вместе с двоеточием теряется правка слов")
-    assert ":" not in out and "готов к сдаче" in out
+    out = sc._protect_colons(orig, corr)
+    assert ":" not in out
+    assert "готов к сдаче" in out
+
+
+# ─── _protect_slashes ──────────────────────────────────────────────────────
+
+def test_slash_forward_kept():
+    """«и/или» не должно стать «и\\или»."""
+    orig = "Запрос и/или согласие."
+    corr = "Запрос и\\или согласие."
+    out = sc._protect_slashes(orig, corr)
+    assert "и/или" in out
+    assert "\\" not in out
+
+
+def test_slash_back_kept():
+    """Оригинальные `\\` сохраняются — модель не должна заменять на `/`."""
+    orig = "Путь C:\\Users\\test"
+    corr = "Путь C:/Users/test"
+    out = sc._protect_slashes(orig, corr)
+    assert "\\" in out
+    assert out.count("\\") == orig.count("\\")
+
+
+def test_slash_bu_kept():
+    """«б/у» — слэш сохраняется."""
+    orig = "Поставка б/у оборудования."
+    corr = "Поставка б\\у оборудования."
+    out = sc._protect_slashes(orig, corr)
+    assert "б/у" in out
+
+
+def test_slash_insertion_blocked():
+    """Модель не должна добавлять слэши, которых не было."""
+    orig = "Запрос или согласие."
+    corr = "Запрос/или согласие."
+    out = sc._protect_slashes(orig, corr)
+    assert "/" not in out
+
+
+# ─── _protect_dots ─────────────────────────────────────────────────────────
+
+def test_dot_insertion_midsentence_blocked():
+    """Модель разбила предложение точкой — откатываем."""
+    orig = "Департаментом не сформированы Планы ввода в эксплуатацию"
+    corr = "Департаментом не сформированы. Планы ввода в эксплуатацию"
+    out = sc._protect_dots(orig, corr)
+    assert "сформированы Планы" in out
+    assert "сформированы." not in out
+
+
+def test_dot_in_initials_kept():
+    """Точки в инициалах оригинала сохраняются после правок."""
+    orig = "Сидоров А.С. подписал документ."
+    corr = "Сидоров А.С. подписал документ."
+    out = sc._protect_dots(orig, corr)
+    assert "А.С." in out
+
+
+def test_dot_trailing_preserved():
+    """Хвостовая точка не теряется (она уже выровнена шагом 2)."""
+    orig = "Это важно."
+    corr = "Это важно."
+    out = sc._protect_dots(orig, corr)
+    assert out.endswith(".")
+
+
+def test_dot_count_preserved():
+    """Если в оригинале две точки, в результате должно быть две."""
+    orig = "Декабрь. Январь."
+    corr = "Декабрь Январь."
+    out = sc._protect_dots(orig, corr)
+    assert out.count(".") == 2
+
+
+# ─── _normalize_corrected: интеграция новых защит ───────────────────────────
+
+def test_normalize_integration_midsentence_period():
+    """Через полный _normalize_corrected: разбивка предложения откатывается."""
+    orig = "Департаментом не сформированы Планы ввода в эксплуатацию"
+    corr = "Департаментом не сформированы. Планы ввода в эксплуатацию"
+    out = sc._normalize_corrected(orig, corr)
+    assert "сформированы Планы" in out
+
+
+def test_normalize_integration_slash_swap():
+    """Через полный _normalize_corrected: и/или сохраняется."""
+    orig = "Запрос и/или согласие."
+    corr = "Запрос и\\или согласие."
+    out = sc._normalize_corrected(orig, corr)
+    assert "и/или" in out
+    assert "\\" not in out
+
+
+def test_normalize_integration_colon_deletion():
+    """Через полный _normalize_corrected: удаление `:` модельен — восстанавливается."""
+    orig = "В договоре: два контроллера."
+    corr = "В договоре два контроллера."
+    out = sc._normalize_corrected(orig, corr)
+    assert ":" in out
 
 
 # ─── _suppress_quote_changes / _strict_protect_quotes ──────────────────────

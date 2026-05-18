@@ -35,19 +35,23 @@ def activate_document(doc, target_rect=None):
         provider.activate(doc, target_rect)
 
 
-def extract_sentences(doc):
+def extract_sentences(doc, *, progress_callback=None, cancel_event=None):
     """Извлечь предложения из документа. Обратная совместимость."""
     provider = get_provider(doc.get("type", ""))
     if provider:
-        return provider.extract_sentences(doc)
+        return provider.extract_sentences(
+            doc, progress_callback=progress_callback, cancel_event=cancel_event,
+        )
     return []
 
 
-def extract_selected_sentences(doc):
+def extract_selected_sentences(doc, *, progress_callback=None, cancel_event=None):
     """Извлечь предложения из выделения. Обратная совместимость."""
     provider = get_provider(doc.get("type", ""))
     if provider:
-        return provider.extract_selected_sentences(doc)
+        return provider.extract_selected_sentences(
+            doc, progress_callback=progress_callback, cancel_event=cancel_event,
+        )
     return None
 
 
@@ -116,23 +120,39 @@ def get_last_provider_error(doc):
     return None
 
 
-def analyze_format(doc):
-    """Проанализировать форматирование документа (преобладающий шрифт/размер/стиль)."""
+def analyze_format(doc, *, cancel_event=None, progress_callback=None):
+    """Проанализировать форматирование документа (преобладающий шрифт/размер/стиль).
+
+    Args:
+        cancel_event: threading.Event для прерывания обхода документа.
+        progress_callback: callable(processed, total) — точка прокачки Tk-очереди.
+    """
     provider = get_provider(doc.get("type", ""))
     if provider:
-        return provider.analyze_format(doc)
+        return provider.analyze_format(
+            doc, cancel_event=cancel_event, progress_callback=progress_callback,
+        )
     return None
 
 
-def apply_format_uniform(doc, attr, target_value=None):
+def apply_format_uniform(doc, attr, target_value=None, *,
+                         cancel_event=None, progress_callback=None):
     """Применить унификацию форматирования по одному атрибуту.
+
+    Args:
+        cancel_event: threading.Event для прерывания главного цикла применения.
+        progress_callback: callable(processed, total) — дёргается из COM-цикла
+            чтобы UI смог обработать клик «Остановить».
 
     Returns:
         dict-дескриптор snapshot или None.
     """
     provider = get_provider(doc.get("type", ""))
     if provider:
-        return provider.apply_format_uniform(doc, attr, target_value)
+        return provider.apply_format_uniform(
+            doc, attr, target_value,
+            cancel_event=cancel_event, progress_callback=progress_callback,
+        )
     return None
 
 

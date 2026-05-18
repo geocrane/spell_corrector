@@ -21,10 +21,8 @@ from ui.constants import (
     SPINNER_DELAY,
     RIBBON_BG,
     RIBBON_NORMAL_FG,
-    RIBBON_TOGGLE_MIXED_BG,
-    RIBBON_TOGGLE_ON_BORDER,
-    RIBBON_FONT_FAMILY,
 )
+from ui.overlay import BusyOverlay
 from ui.ribbon import RibbonButton, RibbonToggle
 from ui.tiles import (
     create_document_tile,
@@ -94,14 +92,12 @@ class MainWindow(tk.Tk):
         self.spinner_job = None
         self.doc_status_label = None
         self._extraction_in_progress = False  # блокировка «Назад» во время извлечения
+        self._tile_click_in_progress = False  # анти-дребезг быстрых кликов по плиткам
         self.errors_tiles = []  # [(correction, tile_frame), ...] для режима ошибок
         self.revisions_mode_var = tk.BooleanVar(value=False)
 
-        # Overlay-индикатор унификации форматирования (ленивая инициализация)
-        self._unify_overlay = None
-        self._unify_spinner = None
-        self._unify_spinner_index = 0
-        self._unify_spinner_job = None
+        # Универсальный overlay-индикатор долгих операций (создаётся в _create_ui).
+        self.overlay: BusyOverlay | None = None
         self._all_toolbar_buttons = []
 
         # Конфигурация
@@ -123,6 +119,7 @@ class MainWindow(tk.Tk):
         ev.subscribe("documents_found", self._on_documents_found)
         ev.subscribe("documents_not_found", self._on_documents_not_found)
         ev.subscribe("extraction_started", self._on_extraction_started)
+        ev.subscribe("extraction_progress", self._on_extraction_progress)
         ev.subscribe("check_started", self._on_check_started)
         ev.subscribe("sentence_start", self._on_sentence_start)
         ev.subscribe("sentence_checked", self._on_sentence_checked)
@@ -132,29 +129,44 @@ class MainWindow(tk.Tk):
         ev.subscribe("revisions_mode_changed", self._on_revisions_mode_changed)
         ev.subscribe("navigation_blocked", self._on_navigation_blocked)
         ev.subscribe("format_state_changed", self._on_format_state_changed)
+        ev.subscribe("unify_progress", self._on_unify_progress)
 
     # ─── Предзагрузка модели ────────────────────────────────────────────
 
     def _preload_model_in_background(self):
-        """Загрузить ML-модель в фоновом потоке (не блокирует UI)."""
+        """Загрузить ML-модель в фоновом потоке (не блокирует UI).
+
+        Показывает overlay «Загрузка модели…» в центральном поле, чтобы
+        пользователь видел, что приложение готовится, а не «зависло».
+        """
+        import spell_checker
+
+        if spell_checker.is_model_loaded():
+            return
+
+        self.overlay.show("Загрузка модели, подождите…", cancelable=False)
 
         def _load():
-            import spell_checker
-
-            # Пустой список — модель загрузится, но проверять нечего
-            spell_checker.check_sentences_async(
-                sentences=[],
-                on_progress=lambda *a: None,
-                on_complete=lambda: None,
-            )
-            logger.info("Model preloaded in background")
+            try:
+                spell_checker.SpellChecker.get_instance().load_model()
+                logger.info("Model preloaded in background")
+            except Exception:
+                logger.exception("Model preload failed")
+            finally:
+                self.after(0, self.overlay.hide)
 
         threading.Thread(target=_load, daemon=True).start()
 
     # ─── Обработчики событий ────────────────────────────────────────────
 
     def _on_extraction_started(self):
-        """Мгновенно переключить на экран предложений, заблокировать «Назад»."""
+        """Мгновенно переключить на экран предложений, заблокировать «Назад».
+
+        Overlay показывается без кнопки «Остановить»: Word-провайдер
+        извлекает предложения одним монолитным COM-вызовом и не имеет
+        точек реальной отмены, а синхронный update() во время этого
+        вызова вызывал артефакты в тексте документа.
+        """
         self.sentences = []
         self.check_results = {}
         self.selected_sentence_index = None
@@ -164,17 +176,37 @@ class MainWindow(tk.Tk):
         self.current_view = "sentences"
         self._update_button_state()
         self.status_label.config(text="⏳ Извлечение предложений...")
+        self.overlay.show("Извлечение предложений…", cancelable=False)
         self.update()  # полная перерисовка окна до COM-вызова
+
+    def _on_extraction_progress(self, extracted, processed):
+        """Обновить текст overlay (без прокачки Tk-очереди).
+
+        Не вызываем self.update() синхронно — это могло приводить к
+        re-entrancy во время COM-вызова extract и портить состояние Word.
+        Обновление сообщения через self.after(0, ...) выполнится, когда
+        Tk-цикл вернёт управление.
+        """
+        def _update():
+            try:
+                self.overlay.update_message(f"Извлечено {extracted} предложений…")
+            except tk.TclError:
+                pass
+        self.after(0, _update)
 
     def _on_documents_found(self, documents):
         self.after(0, lambda: self._render_documents(documents))
 
     def _on_documents_not_found(self):
-        self.after(0, lambda: self.status_label.config(text="Документы не найдены"))
+        # Полная перерисовка с пустым списком: убирает зависшие плитки
+        # от предыдущего поиска (например, если документы были закрыты).
+        self.after(0, lambda: self._render_documents([]))
 
     def _on_check_started(self, total):
         def _update():
-            import spell_checker
+            # Извлечение завершилось — overlay прогресса скрываем; во время
+            # самой проверки заглушка не нужна (плитки сами по себе наглядны).
+            self.overlay.hide()
 
             self.sentences = self.engine.sentences
             self.check_results = self.engine.check_results
@@ -185,12 +217,6 @@ class MainWindow(tk.Tk):
             self._clear_tiles()
             self.current_view = "sentences"
             self._update_button_state()
-
-            # Если модель ещё не загружена — показать индикатор
-            if not spell_checker.is_model_loaded():
-                self.status_label.config(text="⏳ Загрузка модели...")
-                # Обновить UI немедленно перед тяжёлой операцией
-                self.update_idletasks()
 
             for sentence in self.sentences:
                 self._create_sentence_tile_checking_ui(sentence)
@@ -249,6 +275,7 @@ class MainWindow(tk.Tk):
     def _on_check_error(self, error):
         def _update():
             logger.error("Check error: %s", error)
+            self.overlay.hide()
             self._stop_spinner()
             self.is_checking = False
             self._extraction_in_progress = False  # сброс при ошибке
@@ -397,7 +424,7 @@ class MainWindow(tk.Tk):
         self.skip_tables_toggle = RibbonToggle(
             self.doc_options_frame,
             icon_key="skip_tables",
-            text="Таблицы",
+            text="Без таблиц",
             command=self._on_toggle_skip_tables,
             icon_size=icons.ICON_SM,
             compact=True,
@@ -505,6 +532,9 @@ class MainWindow(tk.Tk):
         self.status_label = ttk.Label(self, text="Нажмите 'Найти документы'")
         self.status_label.pack(pady=(0, 10))
 
+        # Overlay создаём после canvas — он будет накладываться поверх scrollable-области.
+        self.overlay = BusyOverlay(self.canvas)
+
     # ─── Прокрутка ──────────────────────────────────────────────────────
 
     def _on_frame_configure(self, event):
@@ -572,8 +602,14 @@ class MainWindow(tk.Tk):
             self._refresh_hide_clean_toggle()
 
     def _refresh_check_buttons(self):
-        """Обновить состояние кнопок проверки (активна/неактивна)."""
-        has_doc = self.engine.selected_doc is not None and not self.engine.is_checking
+        """Обновить состояние кнопок проверки (активна/неактивна).
+
+        Для Excel «Весь текст» disabled: на больших таблицах извлечение всех
+        ячеек длится очень долго; пользователь сам должен выделить диапазон.
+        """
+        doc = self.engine.selected_doc
+        is_excel = doc is not None and doc.get("type") == "excel"
+        has_doc = doc is not None and not self.engine.is_checking
         is_checking = self.engine.is_checking
         if is_checking:
             self.check_button.set_text("Проверяю...")
@@ -581,7 +617,7 @@ class MainWindow(tk.Tk):
         else:
             self.check_button.set_text("Весь текст")
             self.check_selection_button.set_text("Фрагмент")
-        self.check_button.set_enabled(has_doc)
+        self.check_button.set_enabled(has_doc and not is_excel)
         self.check_selection_button.set_enabled(has_doc)
 
     def _refresh_format_unify_panel(self):
@@ -590,16 +626,20 @@ class MainWindow(tk.Tk):
         Сама панель видна всегда в режиме «documents» (упаковывается в
         _update_button_state). Здесь только красим toggle-состояние из
         engine.format_state и enable/disable по наличию выбранного документа.
+
+        Для Excel унификация не поддерживается — все кнопки disabled.
         """
-        has_doc = self.engine.selected_doc is not None
+        doc = self.engine.selected_doc
+        has_doc = doc is not None
+        is_excel = has_doc and doc.get("type") == "excel"
         for attr, tg in self.format_buttons.items():
             st = self.engine.format_state.get(attr, {})
             is_active = bool(st.get("is_active"))
-            if not has_doc:
+            if not has_doc or is_excel:
                 tg.set_state("disabled")
             else:
                 tg.set_state("on" if is_active else "off")
-        self._refresh_format_all_btn(has_doc)
+        self._refresh_format_all_btn(has_doc and not is_excel)
 
     def _refresh_format_all_btn(self, has_doc=None):
         """Обновить вид общей кнопки «Применить всё»: on / off / mixed / disabled."""
@@ -640,65 +680,6 @@ class MainWindow(tk.Tk):
         self._refresh_doc_options_toggles()
         self._update_button_state()
 
-    def _show_unify_overlay(self):
-        """Показать overlay поверх scrollable-области с анимированным спиннером."""
-        if self._unify_overlay is None:
-            self._unify_overlay = tk.Frame(
-                self.canvas, bg=RIBBON_TOGGLE_MIXED_BG, bd=0,
-            )
-            inner = tk.Frame(self._unify_overlay, bg=RIBBON_TOGGLE_MIXED_BG)
-            inner.place(relx=0.5, rely=0.5, anchor="center")
-            self._unify_spinner = tk.Label(
-                inner, text=SPINNER_FRAMES[0],
-                font=(RIBBON_FONT_FAMILY, 28),
-                bg=RIBBON_TOGGLE_MIXED_BG, fg=RIBBON_TOGGLE_ON_BORDER,
-            )
-            self._unify_spinner.pack(pady=(0, 10))
-            tk.Label(
-                inner, text="Идёт унификация форматирования…",
-                font=(RIBBON_FONT_FAMILY, 11),
-                bg=RIBBON_TOGGLE_MIXED_BG, fg=RIBBON_NORMAL_FG,
-            ).pack()
-        self._unify_overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        self._unify_overlay.lift()
-        self._unify_spinner_index = 0
-        if self._unify_spinner_job is not None:
-            try:
-                self.after_cancel(self._unify_spinner_job)
-            except Exception:
-                pass
-        self._unify_spinner_job = self.after(
-            SPINNER_DELAY, self._animate_unify_spinner,
-        )
-
-    def _animate_unify_spinner(self):
-        if (
-            self._unify_overlay is not None
-            and self._unify_overlay.winfo_ismapped()
-            and self._unify_spinner is not None
-        ):
-            self._unify_spinner_index = (
-                self._unify_spinner_index + 1
-            ) % len(SPINNER_FRAMES)
-            self._unify_spinner.config(
-                text=SPINNER_FRAMES[self._unify_spinner_index]
-            )
-            self._unify_spinner_job = self.after(
-                SPINNER_DELAY, self._animate_unify_spinner,
-            )
-        else:
-            self._unify_spinner_job = None
-
-    def _hide_unify_overlay(self):
-        if self._unify_spinner_job is not None:
-            try:
-                self.after_cancel(self._unify_spinner_job)
-            except Exception:
-                pass
-            self._unify_spinner_job = None
-        if self._unify_overlay is not None:
-            self._unify_overlay.place_forget()
-
     def _on_format_toggle(self, attr: str):
         """Клик по одной из кнопок Шрифт/Размер/Стиль.
 
@@ -716,14 +697,18 @@ class MainWindow(tk.Tk):
         if method is None:
             return
         self._toolbar_set_busy(True)
-        self._show_unify_overlay()
+        self.overlay.show(
+            "Идёт унификация форматирования…",
+            cancelable=True,
+            on_cancel=self.engine.cancel_unify,
+        )
         self.status_label.config(text="⏳ Унификация форматирования…")
         # Полная перерисовка — overlay и спиннер должны появиться ДО COM-вызова
         self.update()
         try:
             method()
         finally:
-            self._hide_unify_overlay()
+            self.overlay.hide()
             self._toolbar_set_busy(False)
 
     def _on_format_toggle_all(self):
@@ -731,14 +716,35 @@ class MainWindow(tk.Tk):
         if not self.engine.selected_doc:
             return
         self._toolbar_set_busy(True)
-        self._show_unify_overlay()
+        self.overlay.show(
+            "Идёт унификация форматирования…",
+            cancelable=True,
+            on_cancel=self.engine.cancel_unify,
+        )
         self.status_label.config(text="⏳ Унификация форматирования…")
         self.update()
         try:
             self.engine.toggle_unify_all()
         finally:
-            self._hide_unify_overlay()
+            self.overlay.hide()
             self._toolbar_set_busy(False)
+
+    def _on_unify_progress(self, processed, total):
+        """Дать Tk обработать клик «Остановить» во время COM-цикла унификации.
+
+        Текст overlay не обновляем (по согласованному UX — статичное сообщение).
+        Цель — только прокачать очередь Tk-событий, чтобы клик по кнопке
+        дошёл до on_cancel и engine.cancel_unify установил cancel_event.
+
+        ВАЖНО: self.update() вызываем СИНХРОННО, без self.after(0, ...).
+        Callback дёргается из главного потока изнутри блокирующего COM-вызова —
+        отложенная задача через after(0) не выполнится, пока COM не вернёт
+        управление. Синхронный update прокачивает очередь Tk здесь и сейчас.
+        """
+        try:
+            self.update()
+        except tk.TclError:
+            pass
 
     def _on_format_state_changed(self, attr, is_active, invalidated=False):
         def _update():
@@ -828,9 +834,22 @@ class MainWindow(tk.Tk):
     # ─── Действия пользователя ──────────────────────────────────────────
 
     def find_documents(self):
-        self.engine.find_documents()
+        self.overlay.show("Поиск открытых документов…", cancelable=False)
+        self.update()  # дать overlay появиться до синхронного COM-вызова
+        try:
+            self.engine.find_documents()
+        finally:
+            self.overlay.hide()
 
     def check_selected_document(self):
+        # Для Excel «Весь текст» disabled (см. _refresh_check_buttons), но
+        # подстрахуемся на случай вызова через горячую клавишу или race.
+        doc = self.engine.selected_doc
+        if doc is not None and doc.get("type") == "excel":
+            self.status_label.config(
+                text="Для Excel доступна только проверка выделенного диапазона",
+            )
+            return
         self.engine.check_document()
 
     def check_selected_fragment(self):
@@ -926,33 +945,65 @@ class MainWindow(tk.Tk):
             self.doc_status_label = status_label
 
     def _on_tile_click(self, doc):
-        if (
-            self.engine.selected_doc
-            and id(doc) == id(self.engine.selected_doc)
-            and (self.engine.is_checking or self.engine.check_results)
-        ):
-            self._show_sentences_from_cache()
+        # Анти-дребезг: блокирующий activate_document() длится 300-800мс. Если
+        # пользователь кликает повторно, новые клики игнорируем до завершения.
+        if self._tile_click_in_progress:
             return
+        self._tile_click_in_progress = True
 
-        self.engine.select_document(doc)
-        self._refresh_check_buttons()
-        self._refresh_doc_dependent_options()
-        self._refresh_format_unify_panel()
-        self._highlight_selected_tile_ui()
+        try:
+            if (
+                self.engine.selected_doc
+                and id(doc) == id(self.engine.selected_doc)
+                and (self.engine.is_checking or self.engine.check_results)
+            ):
+                self._show_cached_sentences_with_overlay()
+                return
 
-        app_width = APP_WIDTH
-        target_rect = (
-            self.monitor["x"],
-            self.monitor["y"],
-            self.monitor["width"] - app_width,
-            self.monitor["height"],
-        )
-        office_finder.activate_document(doc, target_rect)
-        self.after(100, self._raise_window)
+            self.engine.select_document(doc)
+            self._refresh_check_buttons()
+            self._refresh_doc_dependent_options()
+            self._refresh_format_unify_panel()
+            self._highlight_selected_tile_ui()
 
-        # Если у документа есть кэшированные результаты — показать предложения
-        if self.engine.sentences:
+            # Видимая реакция до COM-вызова: пользователь видит, что клик принят.
+            self.status_label.config(text="Переключение…")
+            self.update_idletasks()
+
+            app_width = APP_WIDTH
+            target_rect = (
+                self.monitor["x"],
+                self.monitor["y"],
+                self.monitor["width"] - app_width,
+                self.monitor["height"],
+            )
+            office_finder.activate_document(doc, target_rect)
+            self.after(100, self._raise_window)
+            self._update_status_text()
+
+            # Если у документа есть кэшированные результаты — показать предложения
+            if self.engine.sentences:
+                self._show_cached_sentences_with_overlay()
+        finally:
+            # Снимаем блокировку после возврата фокуса в наше окно (raise_window
+            # планируется через 100мс, плюс запас на завершение СOM-callback'ов).
+            self.after(200, self._release_tile_click_lock)
+
+    def _show_cached_sentences_with_overlay(self):
+        """Перерисовать плитки из кэша под заглушкой «Перерисовка…».
+
+        Перерисовка большого числа плиток занимает 1-3 сек и визуально лагает.
+        Overlay скрывает процесс — пользователь видит уже готовый результат.
+        """
+        self.overlay.show("Перерисовка интерфейса…", cancelable=False)
+        self.update()  # форсировать показ overlay до тяжёлой перерисовки
+        try:
             self._show_sentences_from_cache()
+        finally:
+            self.overlay.hide()
+
+    def _release_tile_click_lock(self):
+        self._tile_click_in_progress = False
 
     def _highlight_selected_tile_ui(self):
         highlight_selected_tile(self.tile_frames, self.engine.selected_doc)

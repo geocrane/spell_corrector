@@ -407,40 +407,92 @@ def _apply_only_comma_changes(original, corrected_pre_norm):
 _TRAILING_PUNCT = set('.,;:!?…—–-')
 
 
-def _suppress_colon_insertion(original, corrected):
-    """Откатить вставки двоеточия, если в оригинале его не было.
+def _protect_chars(original, corrected, protected):
+    """Защитить набор символов от любых изменений модели (вставки/удаления/замены позиции).
+
+    Посимвольный diff: где модель вставила защищённый символ — он отбрасывается;
+    где удалила — блок восстанавливается из оригинала; где заменила позицию —
+    берётся символ из оригинала. Используется для `:`, `/\\`, `.` посередине.
 
     Args:
         original: Исходный текст.
         corrected: Исправленный текст.
+        protected: frozenset символов, которые надо защитить.
 
     Returns:
-        str: Текст без добавленных двоеточий.
+        str: Текст с восстановленным расположением protected-символов.
     """
-    if ':' not in corrected or ':' in original:
+    if not original or not corrected:
         return corrected
-    orig_words = original.split()
-    corr_words = corrected.split()
-    sm = difflib.SequenceMatcher(None, orig_words, corr_words)
-    result = []
+    if not any(c in protected for c in original) and not any(c in protected for c in corrected):
+        return corrected
+
+    orig_chars = list(original)
+    corr_chars = list(corrected)
+    sm = difflib.SequenceMatcher(None, orig_chars, corr_chars)
+    out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op == 'equal':
-            result.extend(orig_words[i1:i2])
+            out.extend(corr_chars[j1:j2])
         elif op == 'replace':
-            new_chunk = corr_words[j1:j2]
-            if any(':' in w for w in new_chunk) and not any(':' in w for w in orig_words[i1:i2]):
-                result.extend(orig_words[i1:i2])
-            else:
-                result.extend(new_chunk)
-        elif op == 'delete':
-            result.extend(orig_words[i1:i2])
+            for o, c in zip(orig_chars[i1:i2], corr_chars[j1:j2]):
+                if o in protected or c in protected:
+                    out.append(o)
+                else:
+                    out.append(c)
+            orig_len = i2 - i1
+            corr_len = j2 - j1
+            if corr_len > orig_len:
+                for c in corr_chars[j1 + orig_len:j2]:
+                    if c not in protected:
+                        out.append(c)
+            elif orig_len > corr_len:
+                tail = orig_chars[i1 + corr_len:i2]
+                if any(c in protected for c in tail):
+                    out.extend(tail)
         elif op == 'insert':
-            new_chunk = corr_words[j1:j2]
-            if any(':' in w for w in new_chunk):
-                pass
-            else:
-                result.extend(new_chunk)
-    return ' '.join(result)
+            for c in corr_chars[j1:j2]:
+                if c not in protected:
+                    out.append(c)
+        elif op == 'delete':
+            chunk = orig_chars[i1:i2]
+            if any(c in protected for c in chunk):
+                out.extend(chunk)
+    return ''.join(out)
+
+
+_COLON_SET = frozenset(':')
+_SLASH_SET = frozenset({'/', '\\'})
+_DOT_SET = frozenset('.')
+
+
+def _protect_colons(original, corrected):
+    """Полная защита двоеточий: количество и позиции `:` в результате == в оригинале.
+
+    Покрывает оба сценария:
+    - «В договоре: два контроллера. В соглашении: один.» — `:` не удаляется;
+    - «Комментарии в приложении, лист 3» — `:` не добавляется.
+    """
+    return _protect_chars(original, corrected, _COLON_SET)
+
+
+def _protect_slashes(original, corrected):
+    """Запретить замену `/` на `\\` и наоборот, а также вставку/удаление слэшей.
+
+    Покрывает: «и/или», «б/у» — модель не должна менять их на «и\\или», «б\\у».
+    """
+    return _protect_chars(original, corrected, _SLASH_SET)
+
+
+def _protect_dots(original, corrected):
+    """Запретить вставку/удаление точек.
+
+    Применяется ПОСЛЕ выравнивания хвостовой пунктуации в _normalize_corrected
+    (шаг 2): хвостовая точка уже синхронизирована с оригиналом, поэтому защита
+    блокирует только разбивку предложения на два через вставку `.` посередине
+    (например, «не сформированы Планы» → «не сформированы. Планы»).
+    """
+    return _protect_chars(original, corrected, _DOT_SET)
 
 
 _YO_MAP = str.maketrans('ёЁ', 'еЕ')
@@ -600,9 +652,11 @@ def _normalize_corrected(original, corrected, strict=False):
     2. Заменить хвостовую пунктуацию на оригинальную.
     3. Подавить замены е↔ё.
     4. Запретить смену заглавной → строчной.
-    5. Подавить вставку двоеточия.
+    5. Полная защита двоеточий (количество и позиции == оригинала).
     6. Подавить замену типа кавычек.
     7. Подавить вставку пробелов в инициалах.
+    8. Защита `/` и `\\` от взаимной замены и вставки/удаления.
+    9. Защита `.` от вставки/удаления (запрет разбивки предложения).
 
     Args:
         original: Исходный текст.
@@ -664,8 +718,8 @@ def _normalize_corrected(original, corrected, strict=False):
             pass
     result = ''.join(out)
 
-    # 5. Подавить вставку двоеточия
-    result = _suppress_colon_insertion(original, result)
+    # 5. Полная защита двоеточий
+    result = _protect_colons(original, result)
 
     # 6. Подавить замену типа кавычек
     if strict:
@@ -675,6 +729,14 @@ def _normalize_corrected(original, corrected, strict=False):
 
     # 7. Подавить вставку пробелов в инициалах
     result = _suppress_space_in_initials(original, result)
+
+    # 8. Защита слэшей от взаимной замены и вставки/удаления
+    result = _protect_slashes(original, result)
+
+    # 9. Защита точек от вставки/удаления (запрет разбивки предложения).
+    # Применяется ПОСЛЕ выравнивания хвоста на шаге 2 — хвостовая точка
+    # уже идентична оригиналу, поэтому защита блокирует только середину.
+    result = _protect_dots(original, result)
 
     return result
 

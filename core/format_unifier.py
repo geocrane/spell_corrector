@@ -13,6 +13,7 @@
 
 import contextlib
 import logging
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
@@ -204,12 +205,18 @@ def _read_combined(font) -> Optional[dict]:
 
 def _split_segment(
     doc_com, start: int, end: int, read_value: Callable[[Any], Any], depth: int = 0,
+    *, cancel_event: Optional[threading.Event] = None,
 ) -> Iterator[tuple]:
     """Рекурсивно разбить [start, end] на однородные по read_value сегменты.
 
     Yield (start, end, value). Если значение «смешанное» (read_value вернул
     None или WD_UNDEFINED) — делим пополам, иначе отдаём как есть.
+
+    cancel_event проверяется на каждом уровне рекурсии — на длинном параграфе
+    с десятками сегментов это даёт точку прерывания внутри одного параграфа.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        return
     if end <= start:
         return
     try:
@@ -228,18 +235,29 @@ def _split_segment(
     if mid <= start or mid >= end:
         yield (start, end, val)
         return
-    yield from _split_segment(doc_com, start, mid, read_value, depth + 1)
-    yield from _split_segment(doc_com, mid, end, read_value, depth + 1)
+    yield from _split_segment(doc_com, start, mid, read_value, depth + 1, cancel_event=cancel_event)
+    yield from _split_segment(doc_com, mid, end, read_value, depth + 1, cancel_event=cancel_event)
 
 
 # ─── Анализ форматирования ─────────────────────────────────────────────────
 
-def analyze_format(doc_com, *, skip_heading_styles: bool = True) -> FormatStats:
+def analyze_format(
+    doc_com,
+    *,
+    skip_heading_styles: bool = True,
+    cancel_event: Optional[threading.Event] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> FormatStats:
     """Посчитать преобладающие шрифт/размер/стиль в основном тексте.
 
     Обходит doc.Paragraphs, пропускает heading-параграфы, аккумулирует Counter
     по числу символов в однородных сегментах. Один проход через combined-reader
     минимизирует число COM-вызовов.
+
+    cancel_event/progress_callback работают так же, как в apply_unified_attribute:
+    проверяются на каждом параграфе. Если cancel выставлен — возвращаются
+    накопленные на этот момент счётчики (caller проверит is_set() и решит,
+    использовать результат или нет).
     """
     font_counter: Counter = Counter()
     size_counter: Counter = Counter()
@@ -254,6 +272,14 @@ def analyze_format(doc_com, *, skip_heading_styles: bool = True) -> FormatStats:
         return FormatStats()
 
     for i in range(1, para_count + 1):
+        if cancel_event is not None and cancel_event.is_set():
+            logger.info("analyze_format: cancelled at para %d/%d", i, para_count)
+            break
+        if progress_callback is not None:
+            try:
+                progress_callback(i, para_count)
+            except Exception:
+                logger.debug("progress_callback failed", exc_info=True)
         try:
             p = paragraphs.Item(i)
         except Exception:
@@ -269,7 +295,9 @@ def analyze_format(doc_com, *, skip_heading_styles: bool = True) -> FormatStats:
         if p_end <= p_start:
             continue
 
-        for (s, e, val) in _split_segment(doc_com, p_start, p_end, _read_combined):
+        for (s, e, val) in _split_segment(
+            doc_com, p_start, p_end, _read_combined, cancel_event=cancel_event,
+        ):
             if val is None:
                 continue
             weight = e - s
@@ -345,13 +373,28 @@ def _apply_segment_attr(doc_com, start: int, end: int, attr: str, target) -> Non
 
 
 def apply_unified_attribute(
-    doc_com, attr: str, target_value: Any, *, skip_heading_styles: bool = True,
+    doc_com,
+    attr: str,
+    target_value: Any,
+    *,
+    skip_heading_styles: bool = True,
+    cancel_event: Optional[threading.Event] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Snapshot:
     """Применить target_value к атрибуту attr во всех non-heading параграфах.
 
     Возвращает Snapshot для последующего restore_snapshot. Внутри
     disable_track_revisions, чтобы не засорять историю ревизиями
     «изменён шрифт».
+
+    Args:
+        cancel_event: Если установлен в .set() — цикл по параграфам прервётся
+            на ближайшей точке проверки (каждые 5 параграфов). Уже совершённые
+            правки остаются в Snapshot — restore_snapshot() откатит их.
+        progress_callback: Вызывается каждые 5 параграфов как
+            progress_callback(processed, total). Используется UI чтобы
+            прокачать очередь Tk-событий и обработать клик «Остановить»
+            во время синхронного COM-цикла.
     """
     if attr not in ("font_name", "font_size", "style"):
         raise ValueError(f"unknown attr: {attr}")
@@ -387,6 +430,17 @@ def apply_unified_attribute(
             return snap
 
         for i in range(1, para_count + 1):
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info(
+                    "apply_unified_attribute: cancelled at para %d/%d",
+                    i, para_count,
+                )
+                break
+            if progress_callback is not None:
+                try:
+                    progress_callback(i, para_count)
+                except Exception:
+                    logger.debug("progress_callback failed", exc_info=True)
             try:
                 p = paragraphs.Item(i)
             except Exception:
@@ -402,7 +456,13 @@ def apply_unified_attribute(
             if p_end <= p_start:
                 continue
 
-            for (s, e, val) in _split_segment(doc_com, p_start, p_end, reader):
+            cancelled_inside = False
+            for (s, e, val) in _split_segment(
+                doc_com, p_start, p_end, reader, cancel_event=cancel_event,
+            ):
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled_inside = True
+                    break
                 if val is None:
                     continue
                 if _segments_match(attr, val, target_value):
@@ -410,6 +470,11 @@ def apply_unified_attribute(
                 orig_fmt = _snapshot_segment_fmt(doc_com, s, e, attr)
                 snap.ranges.append((s, e, orig_fmt))
                 _apply_segment_attr(doc_com, s, e, attr, target_value)
+            if cancelled_inside:
+                # Внешний break сработает на следующей итерации через проверку
+                # cancel_event.is_set() в начале цикла. Здесь только избегаем
+                # лишнего snapshot_segment_fmt для следующего сегмента.
+                continue
 
     logger.info(
         "apply_unified_attribute: attr=%s target=%r segments=%d",
