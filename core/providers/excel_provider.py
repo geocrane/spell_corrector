@@ -158,7 +158,7 @@ class ExcelProvider(DocumentProvider):
                 attempted += 1
                 try:
                     name = wb.Name
-                except pywintypes.com_error:
+                except (pywintypes.com_error, AttributeError):
                     continue
                 docs.append({
                     "name": name,
@@ -167,7 +167,7 @@ class ExcelProvider(DocumentProvider):
                     "workbook": wb,
                     "application": app,
                 })
-        except pywintypes.com_error as e:
+        except (pywintypes.com_error, AttributeError) as e:
             logger.warning("Не удалось перебрать Workbooks: %s", e)
             self._last_error = "Excel заблокирован — нажмите Esc в Excel и повторите поиск"
             return docs
