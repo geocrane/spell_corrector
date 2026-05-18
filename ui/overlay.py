@@ -37,15 +37,17 @@ class BusyOverlay:
         self._on_cancel = None
 
     def _build(self) -> None:
-        self._frame = tk.Frame(self._parent, bg=RIBBON_TOGGLE_MIXED_BG, bd=0)
-        self._inner = tk.Frame(self._frame, bg=RIBBON_TOGGLE_MIXED_BG)
+        # Используем чисто белый фон для всего фрейма, чтобы на 100% скрыть
+        # то, что происходит под ним (отрисовка плиток).
+        self._frame = tk.Frame(self._parent, bg="#ffffff", bd=0)
+        self._inner = tk.Frame(self._frame, bg="#ffffff")
         self._inner.place(relx=0.5, rely=0.5, anchor="center")
 
         self._spinner_label = tk.Label(
             self._inner,
             text=SPINNER_FRAMES[0],
             font=(RIBBON_FONT_FAMILY, 28),
-            bg=RIBBON_TOGGLE_MIXED_BG,
+            bg="#ffffff",
             fg=RIBBON_TOGGLE_ON_BORDER,
         )
         self._spinner_label.pack(pady=(0, 10))
@@ -54,7 +56,7 @@ class BusyOverlay:
             self._inner,
             text="",
             font=(RIBBON_FONT_FAMILY, 11),
-            bg=RIBBON_TOGGLE_MIXED_BG,
+            bg="#ffffff",
             fg=RIBBON_NORMAL_FG,
             wraplength=380,
             justify="center",
@@ -65,9 +67,9 @@ class BusyOverlay:
             self._inner,
             text="Остановить",
             font=(RIBBON_FONT_FAMILY, 10),
-            bg=RIBBON_TOGGLE_MIXED_BG,
+            bg="#ffffff",
             fg=RIBBON_NORMAL_FG,
-            activebackground=RIBBON_TOGGLE_MIXED_BG,
+            activebackground="#f3f3f3",
             activeforeground=RIBBON_NORMAL_FG,
             relief="solid",
             bd=1,

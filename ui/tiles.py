@@ -449,17 +449,27 @@ def create_diff_widget(parent, original, corrected, after_callback=None):
     def adjust_height(event=None):
         if not text_widget.winfo_exists():
             return
-        text_widget.update_idletasks()
+        # Убираем update_idletasks() отсюда — при массовом создании плиток
+        # это вызывало "шторм" перерисовок. Одной синхронизации в конце
+        # в main_window.py будет достаточно.
         result = text_widget.count("1.0", "end", "displaylines")
         if result:
             line_count = result[0]
-            text_widget.config(height=max(1, line_count))
+            try:
+                if int(text_widget.cget("height")) != line_count:
+                    text_widget.config(height=max(1, line_count))
+            except (tk.TclError, ValueError):
+                pass
 
     text_widget.bind("<Configure>", adjust_height, add="+")
+    # Вызываем один раз сразу, чтобы запустить расчет
+    adjust_height()
+    
+    # Уменьшаем задержку с 50 до 10мс, чтобы "прогрев" под заглушкой шел быстрее
     if after_callback:
-        parent.after(50, after_callback)
+        parent.after(10, after_callback)
     else:
-        parent.after(50, adjust_height)
+        parent.after(10, adjust_height)
 
     return text_widget
 

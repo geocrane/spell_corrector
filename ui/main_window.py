@@ -10,6 +10,7 @@ import ctypes.wintypes
 import logging
 import os
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -1002,19 +1003,28 @@ class MainWindow(tk.Tk):
     def _render_tiles_under_overlay(self, builder, message: str) -> None:
         """Выполнить bulk-перерисовку плиток с overlay поверх docs_frame.
 
-        Скрываем canvas-window с плитками на время сборки, чтобы Tkinter не
-        отрисовывал промежуточные кадры. Overlay показываем поверх Canvas и
-        форсируем idle-задачи, чтобы он реально появился до тяжёлой работы.
+        Overlay показываем поверх Canvas и форсируем idle-задачи, чтобы он
+        реально появился до тяжёлой работы.
         """
         self.overlay.show(message, cancelable=False)
-        self.canvas.itemconfigure(self.canvas_window, state="hidden")
-        # update_idletasks — без обработки внешних событий, чтобы промежуточные
-        # кадры плиток не «протекли» во время сборки.
+        # ВАЖНО: Не скрываем canvas_window через state="hidden", так как это
+        # ломает расчет геометрии (displaylines в Text-виджетах).
+        # Оверлей сам перекроет содержимое, так как он lift().
+        self.update()
         self.update_idletasks()
         try:
             builder()
+            # Фаза стабилизации: даем всем виджетам создаться и запустить свои
+            # after-задачи (например, adjust_height для диффов).
+            # Пока мы под оверлеем, пользователь не видит прыжков высоты.
+            self.update()
+            # Увеличим время ожидания и будем принудительно обновлять UI
+            end_wait = time.time() + 0.3
+            while time.time() < end_wait:
+                self.update()
+                self.update_idletasks()
+                time.sleep(0.02)
         finally:
-            self.canvas.itemconfigure(self.canvas_window, state="normal")
             self.overlay.hide()
 
     def _release_tile_click_lock(self):
@@ -1201,18 +1211,33 @@ class MainWindow(tk.Tk):
         """Применить фильтр скрытия чистых предложений."""
         hide = self.hide_clean_var.get()
 
+        # Сначала собираем список тех, кто ДОЛЖЕН быть виден, в правильном порядке.
+        target_indices = []
+        for index in sorted(self.sentence_tiles.keys()):
+            if not hide or not self._should_hide_tile(index):
+                target_indices.append(index)
+
+        # Проверяем, что сейчас реально упаковано и в каком порядке.
+        # winfo_manager() == 'pack' говорит о том, что виджет виден.
+        current_packed = [
+            idx for idx, tile in sorted(self.sentence_tiles.items())
+            if tile.winfo_exists() and tile.winfo_manager() == "pack"
+        ]
+
+        # Если набор и порядок уже совпадают — ничего не делаем.
+        if current_packed == target_indices:
+            return
+
+        # Если не совпадают — перепаковываем.
         for index in sorted(self.sentence_tiles.keys()):
             tile = self.sentence_tiles[index]
             if tile.winfo_exists():
                 tile.pack_forget()
 
-        for index in sorted(self.sentence_tiles.keys()):
+        for index in target_indices:
             tile = self.sentence_tiles[index]
-            if not tile.winfo_exists():
-                continue
-            if hide and self._should_hide_tile(index):
-                continue
-            tile.pack(fill=tk.X, pady=2, padx=2)
+            if tile.winfo_exists():
+                tile.pack(fill=tk.X, pady=2, padx=2)
 
         self._update_status_text()
 
@@ -1347,42 +1372,45 @@ class MainWindow(tk.Tk):
         При входе автоматически включается отображение ревизий в Word
         (запись ревизий уже выполняется при каждом Apply).
         """
-        self.current_view = "errors"
-        self.selected_sentence_index = None
+        def _build():
+            self.current_view = "errors"
+            self.selected_sentence_index = None
 
-        # Включить отображение ревизий в Word и синхронизировать галочку.
-        # Для Excel пропускаем — Track Changes там нет.
-        doc = self.engine.selected_doc or {}
-        if doc.get("type") != "excel" and not self.engine.revisions_mode:
-            self.engine.set_word_revisions_mode(True)
-        self.revisions_mode_var.set(self.engine.revisions_mode)
-        self._update_button_state()
-        self._refresh_doc_dependent_options()
+            # Включить отображение ревизий в Word и синхронизировать галочку.
+            # Для Excel пропускаем — Track Changes там нет.
+            doc = self.engine.selected_doc or {}
+            if doc.get("type") != "excel" and not self.engine.revisions_mode:
+                self.engine.set_word_revisions_mode(True)
+            self.revisions_mode_var.set(self.engine.revisions_mode)
+            self._update_button_state()
+            self._refresh_doc_dependent_options()
 
-        for widget in self.docs_frame.winfo_children():
-            widget.destroy()
-        self.canvas.yview_moveto(0)
-        self.errors_tiles = []
+            for widget in self.docs_frame.winfo_children():
+                widget.destroy()
+            self.canvas.yview_moveto(0)
+            self.errors_tiles = []
 
-        corrs = self.engine.word_corrections
-        if not corrs:
-            placeholder = tk.Label(
-                self.docs_frame,
-                text="Нет применённых правок",
-                fg="#999",
-                bg="#f0f0f0",
-            )
-            placeholder.pack(pady=20)
-        else:
-            for corr in corrs:
-                tile = create_word_correction_tile(
+            corrs = self.engine.word_corrections
+            if not corrs:
+                placeholder = tk.Label(
                     self.docs_frame,
-                    corr,
-                    self._on_word_correction_click,
+                    text="Нет применённых правок",
+                    fg="#999",
+                    bg="#f0f0f0",
                 )
-                self.errors_tiles.append((corr, tile))
+                placeholder.pack(pady=20)
+            else:
+                for corr in corrs:
+                    tile = create_word_correction_tile(
+                        self.docs_frame,
+                        corr,
+                        self._on_word_correction_click,
+                    )
+                    self.errors_tiles.append((corr, tile))
 
-        self.status_label.config(text=f"Применено правок: {len(corrs)}")
+            self.status_label.config(text=f"Применено правок: {len(corrs)}")
+
+        self._render_tiles_under_overlay(_build, "Подготовка списка ошибок…")
 
     def _exit_errors_view(self):
         """Кнопка «Назад» в режиме ошибок — выключить ревизии, вернуться к sentences."""
