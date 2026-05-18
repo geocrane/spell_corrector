@@ -65,7 +65,7 @@ def get_active_monitor_workarea():
         return {"x": 0, "y": 0, "width": 1920, "height": 1080}
 
 
-APP_WIDTH = 470  # ширина бокового окна; Word открывается на monitor_width - APP_WIDTH
+APP_WIDTH = 450  # ширина бокового окна; Word открывается на monitor_width - APP_WIDTH
 
 
 class MainWindow(tk.Tk):
@@ -572,10 +572,10 @@ class MainWindow(tk.Tk):
         if self.current_view == "documents":
             self.find_button.set_enabled(True)
             # primary_row: [Найти] | [Весь текст] [Фрагмент]
-            self.find_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 40))
-            self.primary_sep.pack(in_=self.primary_row, side=tk.LEFT, fill=tk.Y, padx=4)
-            self.check_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
-            self.check_selection_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
+            self.find_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 44))
+            self.primary_sep.pack(in_=self.primary_row, side=tk.LEFT, fill=tk.Y, padx=6)
+            self.check_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
+            self.check_selection_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
             self.toolbar_separator.pack(fill=tk.X, pady=4)
             self.combo_row.pack(fill=tk.X, pady=(4, 0))
             self.format_unify_frame.pack(side=tk.LEFT)

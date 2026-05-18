@@ -28,27 +28,27 @@
   },
   "fonts": {
     "ribbon_font_family": "Segoe UI",
-    "ribbon_font_size_lg": 9,
-    "ribbon_font_size_sm": 8
+    "ribbon_font_size_lg": 10,
+    "ribbon_font_size_sm": 7
   },
   "ribbon": {
     "compact": {
-      "outer_padx": 4,
-      "outer_pady": 3,
-      "gap": 2,
-      "min_height": 50,
-      "fixed_width": 70,
-      "fixed_height": 54,
-      "icon_box": 22
+      "outer_padx": 3,
+      "outer_pady": 2,
+      "gap": 1,
+      "min_height": 40,
+      "fixed_width": 56,
+      "fixed_height": 44,
+      "icon_box": 18
     },
     "normal": {
-      "outer_padx": 8,
-      "outer_pady": 4,
-      "gap": 3,
-      "min_height": 100,
-      "fixed_width": 92,
-      "fixed_height": 96,
-      "icon_box": 56
+      "outer_padx": 10,
+      "outer_pady": 6,
+      "gap": 10,
+      "min_height": 110,
+      "fixed_width": 120,
+      "fixed_height": 108,
+      "icon_box": 64
     },
     "border_radius": 4
   },
