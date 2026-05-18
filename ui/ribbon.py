@@ -558,7 +558,7 @@ if __name__ == "__main__":
     RibbonButton(
         row1,
         "errors_mode",
-        "Исправления",
+        "Правки",
         command=lambda: print("errors"),
         style="danger",
         icon_size=icons.ICON_MD,

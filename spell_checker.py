@@ -26,9 +26,11 @@ _LOG_FILE = os.path.join(_THIS_DIR, "spell_debug.log")
 logger = logging.getLogger("spell_checker")
 logger.setLevel(logging.DEBUG)
 _fh = logging.FileHandler(_LOG_FILE, encoding="utf-8", mode="a")
-_fh.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-))
+_fh.setFormatter(
+    logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+)
 logger.addHandler(_fh)
 
 
@@ -46,7 +48,9 @@ def discover_adapters():
     adapters = []
     for name in os.listdir(ADAPTERS_DIR):
         path = os.path.join(ADAPTERS_DIR, name)
-        if os.path.isdir(path) and os.path.isfile(os.path.join(path, "adapter_config.json")):
+        if os.path.isdir(path) and os.path.isfile(
+            os.path.join(path, "adapter_config.json")
+        ):
             adapters.append(name)
     adapters.sort()
     logger.info("Discovered adapters: %s", adapters)
@@ -93,6 +97,7 @@ class SpellChecker:
         """Вернуть устройство (ленивая проверка CUDA)."""
         if self._device is None:
             import torch
+
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
         return self._device
 
@@ -128,13 +133,27 @@ class SpellChecker:
 
             # Логирование при первой загрузке (ранее было на уровне модуля)
             logger.info("=" * 50)
-            logger.info("spell_checker loaded | Python %s | torch %s | CUDA: %s",
-                        sys.version.split()[0], torch.__version__, torch.cuda.is_available())
-            logger.info("MODEL_PATH: %s (exists: %s)", MODEL_PATH, os.path.isdir(MODEL_PATH))
-            logger.info("ADAPTERS_DIR: %s (exists: %s)", ADAPTERS_DIR, os.path.isdir(ADAPTERS_DIR))
+            logger.info(
+                "spell_checker loaded | Python %s | torch %s | CUDA: %s",
+                sys.version.split()[0],
+                torch.__version__,
+                torch.cuda.is_available(),
+            )
+            logger.info(
+                "MODEL_PATH: %s (exists: %s)", MODEL_PATH, os.path.isdir(MODEL_PATH)
+            )
+            logger.info(
+                "ADAPTERS_DIR: %s (exists: %s)",
+                ADAPTERS_DIR,
+                os.path.isdir(ADAPTERS_DIR),
+            )
 
-            self.tokenizer = AutoTokenizer.from_pretrained("model/sage-fredt5-distilled-95m")
-            self.model = AutoModelForSeq2SeqLM.from_pretrained("model/sage-fredt5-distilled-95m")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                "model/sage-fredt5-distilled-95m"
+            )
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                "model/sage-fredt5-distilled-95m"
+            )
             self.is_loaded = True
 
     def is_model_loaded(self):
@@ -186,8 +205,16 @@ class SpellChecker:
             str: Исправленный текст.
         """
         logger.debug("check() input: %s", text[:80])
-        inputs = self.tokenizer(text, max_length=None, padding="longest", truncation=False, return_tensors="pt")
-        outputs = self.model.generate(**inputs.to(self.model.device), max_length=inputs["input_ids"].size(1) * 1.5)
+        inputs = self.tokenizer(
+            text,
+            max_length=None,
+            padding="longest",
+            truncation=False,
+            return_tensors="pt",
+        )
+        outputs = self.model.generate(
+            **inputs.to(self.model.device), max_length=inputs["input_ids"].size(1) * 1.5
+        )
         result = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         return result[0]
 
@@ -196,19 +223,19 @@ class SpellChecker:
 
 # Управляющие и невидимые символы, которые нужно удалить
 _INVISIBLE_RE = re.compile(
-    '['
-    '\x00-\x08'     # C0 control chars (включая \x02 — маркер сноски Word)
-    '\x0b\x0c'      # вертикальная табуляция, form feed
-    '\x0e-\x1f'     # остальные C0
-    '\x7f'           # DEL
-    '\u00ad'         # soft hyphen
-    '\u200b-\u200f'  # zero-width spaces, direction marks
-    '\u2028\u2029'   # line/paragraph separator
-    '\u202a-\u202e'  # direction embedding
-    '\u2060-\u2064'  # invisible operators
-    '\ufeff'         # BOM / zero-width no-break space
-    '\ufff0-\ufff8'  # specials
-    ']+'
+    "["
+    "\x00-\x08"  # C0 control chars (включая \x02 — маркер сноски Word)
+    "\x0b\x0c"  # вертикальная табуляция, form feed
+    "\x0e-\x1f"  # остальные C0
+    "\x7f"  # DEL
+    "\u00ad"  # soft hyphen
+    "\u200b-\u200f"  # zero-width spaces, direction marks
+    "\u2028\u2029"  # line/paragraph separator
+    "\u202a-\u202e"  # direction embedding
+    "\u2060-\u2064"  # invisible operators
+    "\ufeff"  # BOM / zero-width no-break space
+    "\ufff0-\ufff8"  # specials
+    "]+"
 )
 
 
@@ -221,18 +248,18 @@ def _sanitize_text(text):
     Returns:
         str: Очищенный текст.
     """
-    text = _INVISIBLE_RE.sub('', text)
-    text = re.sub(r'[\t\u00a0\u202f\u2007\u2008\u2009\u200a\u205f\u3000]+', ' ', text)
-    text = re.sub(r' {2,}', ' ', text)
+    text = _INVISIBLE_RE.sub("", text)
+    text = re.sub(r"[\t\u00a0\u202f\u2007\u2008\u2009\u200a\u205f\u3000]+", " ", text)
+    text = re.sub(r" {2,}", " ", text)
     return text.strip()
 
 
 # ─── Защита токенов ────────────────────────────────────────────────────
 
-_CURRENCY_SYMBOLS = set('₽$€£¥')
-_PROTECTED_RE = re.compile(r'\d')
+_CURRENCY_SYMBOLS = set("₽$€£¥")
+_PROTECTED_RE = re.compile(r"\d")
 # Символы-буллиты: дефис-минус, en-dash, em-dash, math minus, bullet, triangular bullet
-_BULLET_CHARS = set('-\u2013\u2014\u2212\u2022\u2023\u2043\u25e6\u25aa\u25ab\u2027')
+_BULLET_CHARS = set("-\u2013\u2014\u2212\u2022\u2023\u2043\u25e6\u25aa\u25ab\u2027")
 
 
 def _is_protected_token(token):
@@ -250,7 +277,7 @@ def _is_protected_token(token):
         return True
     if any(c in _CURRENCY_SYMBOLS for c in token):
         return True
-    if '№' in token:
+    if "№" in token:
         return True
     if token in _BULLET_CHARS:
         return True
@@ -283,24 +310,33 @@ def _protect_tokens(original, corrected):
     result = []
 
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             result.extend(orig_words[i1:i2])
-        elif op == 'replace':
+        elif op == "replace":
             if any(_is_protected_token(w) for w in orig_words[i1:i2]):
                 result.extend(orig_words[i1:i2])
             else:
                 result.extend(corr_words[j1:j2])
-        elif op == 'delete':
+        elif op == "delete":
             if any(_is_protected_token(w) for w in orig_words[i1:i2]):
                 result.extend(orig_words[i1:i2])
-        elif op == 'insert':
+        elif op == "insert":
             result.extend(corr_words[j1:j2])
 
-    return ' '.join(result)
+    return " ".join(result)
+
+
+_BLOCKLIST_STRIP = ".,;:!?…—–-()[]{}\"'«»„“”"
 
 
 def _protect_word_blocklist(original, corrected, blocklist):
     """Откатить изменения модели для слов из пользовательского блоклиста.
+
+    Двухпроходный алгоритм: сначала находим позиции защищаемых слов в оригинале,
+    затем собираем результат, чередуя «свободные зоны» из corrected и
+    защищаемые слова из оригинала. Это устойчиво к вставкам соседних слов
+    (модельные правки между защищаемыми сохраняются), в отличие от простого
+    отката orig-блока при наличии защищаемого внутри replace.
 
     Args:
         original: Исходный текст.
@@ -318,25 +354,41 @@ def _protect_word_blocklist(original, corrected, blocklist):
     orig_words = original.split()
     corr_words = corrected.split()
 
+    protected_idxs = [
+        i
+        for i, w in enumerate(orig_words)
+        if w.strip(_BLOCKLIST_STRIP).lower() in blocklist_lower
+    ]
+    if not protected_idxs:
+        return corrected
+
     sm = difflib.SequenceMatcher(None, orig_words, corr_words)
-    result = []
-
+    orig_to_corr = {}
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
-            result.extend(orig_words[i1:i2])
-        elif op in ('replace', 'delete'):
-            if any(w.lower() in blocklist_lower for w in orig_words[i1:i2]):
-                result.extend(orig_words[i1:i2])
-            else:
-                if op == 'replace':
-                    result.extend(corr_words[j1:j2])
-        elif op == 'insert':
-            result.extend(corr_words[j1:j2])
+        if op == "equal":
+            for k in range(i2 - i1):
+                orig_to_corr[i1 + k] = j1 + k
+        elif op in ("replace", "delete"):
+            for k in range(i1, i2):
+                orig_to_corr[k] = j1
 
-    return ' '.join(result)
+    out = []
+    prev_corr = 0
+    for p_idx in protected_idxs:
+        p_corr = orig_to_corr.get(p_idx, prev_corr)
+        if p_corr > prev_corr:
+            out.extend(corr_words[prev_corr:p_corr])
+        out.append(orig_words[p_idx])
+        prev_corr = p_corr + 1
+
+    if prev_corr < len(corr_words):
+        out.extend(corr_words[prev_corr:])
+
+    return " ".join(out)
 
 
 # ─── Строгая защита ────────────────────────────────────────────────────
+
 
 def _strict_protect(original, corrected):
     """Откатить вставки и удаления слов — разрешить только замены и равенство.
@@ -355,15 +407,15 @@ def _strict_protect(original, corrected):
     sm = difflib.SequenceMatcher(None, orig_words, corr_words)
     result = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             result.extend(orig_words[i1:i2])
-        elif op == 'replace':
+        elif op == "replace":
             result.extend(corr_words[j1:j2])
-        elif op == 'delete':
+        elif op == "delete":
             result.extend(orig_words[i1:i2])
-        elif op == 'insert':
+        elif op == "insert":
             pass
-    return ' '.join(result)
+    return " ".join(result)
 
 
 def _apply_only_comma_changes(original, corrected_pre_norm):
@@ -383,28 +435,28 @@ def _apply_only_comma_changes(original, corrected_pre_norm):
     sm = difflib.SequenceMatcher(None, orig_words, pre_words)
     result = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             result.extend(orig_words[i1:i2])
-        elif op == 'delete':
+        elif op == "delete":
             result.extend(orig_words[i1:i2])
-        elif op == 'insert':
+        elif op == "insert":
             pass
-        elif op == 'replace':
+        elif op == "replace":
             orig_block = orig_words[i1:i2]
             pre_block = pre_words[j1:j2]
             for ow, pw in zip(orig_block, pre_block):
-                if ow.endswith(',') and ow[:-1].lower() == pw.lower():
+                if ow.endswith(",") and ow[:-1].lower() == pw.lower():
                     result.append(ow[:-1])
                 else:
                     result.append(ow)
             if len(orig_block) > len(pre_block):
-                result.extend(orig_block[len(pre_block):])
-    return ' '.join(result)
+                result.extend(orig_block[len(pre_block) :])
+    return " ".join(result)
 
 
 # ─── Подавление конкретных изменений ───────────────────────────────────
 
-_TRAILING_PUNCT = set('.,;:!?…—–-')
+_TRAILING_PUNCT = set(".,;:!?…—–-")
 
 
 def _protect_chars(original, corrected, protected):
@@ -424,7 +476,9 @@ def _protect_chars(original, corrected, protected):
     """
     if not original or not corrected:
         return corrected
-    if not any(c in protected for c in original) and not any(c in protected for c in corrected):
+    if not any(c in protected for c in original) and not any(
+        c in protected for c in corrected
+    ):
         return corrected
 
     orig_chars = list(original)
@@ -432,9 +486,9 @@ def _protect_chars(original, corrected, protected):
     sm = difflib.SequenceMatcher(None, orig_chars, corr_chars)
     out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             out.extend(corr_chars[j1:j2])
-        elif op == 'replace':
+        elif op == "replace":
             for o, c in zip(orig_chars[i1:i2], corr_chars[j1:j2]):
                 if o in protected or c in protected:
                     out.append(o)
@@ -443,27 +497,27 @@ def _protect_chars(original, corrected, protected):
             orig_len = i2 - i1
             corr_len = j2 - j1
             if corr_len > orig_len:
-                for c in corr_chars[j1 + orig_len:j2]:
+                for c in corr_chars[j1 + orig_len : j2]:
                     if c not in protected:
                         out.append(c)
             elif orig_len > corr_len:
-                tail = orig_chars[i1 + corr_len:i2]
+                tail = orig_chars[i1 + corr_len : i2]
                 if any(c in protected for c in tail):
                     out.extend(tail)
-        elif op == 'insert':
+        elif op == "insert":
             for c in corr_chars[j1:j2]:
                 if c not in protected:
                     out.append(c)
-        elif op == 'delete':
+        elif op == "delete":
             chunk = orig_chars[i1:i2]
             if any(c in protected for c in chunk):
                 out.extend(chunk)
-    return ''.join(out)
+    return "".join(out)
 
 
-_COLON_SET = frozenset(':')
-_SLASH_SET = frozenset({'/', '\\'})
-_DOT_SET = frozenset('.')
+_COLON_SET = frozenset(":")
+_SLASH_SET = frozenset({"/", "\\"})
+_DOT_SET = frozenset(".")
 
 
 def _protect_colons(original, corrected):
@@ -495,7 +549,7 @@ def _protect_dots(original, corrected):
     return _protect_chars(original, corrected, _DOT_SET)
 
 
-_YO_MAP = str.maketrans('ёЁ', 'еЕ')
+_YO_MAP = str.maketrans("ёЁ", "еЕ")
 
 
 def _suppress_yo_replacement(original, result):
@@ -513,9 +567,9 @@ def _suppress_yo_replacement(original, result):
     sm = difflib.SequenceMatcher(None, orig_chars, res_chars)
     out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             out.extend(orig_chars[i1:i2])
-        elif op == 'replace':
+        elif op == "replace":
             for o, r in zip(orig_chars[i1:i2], res_chars[j1:j2]):
                 if o.translate(_YO_MAP) == r.translate(_YO_MAP):
                     out.append(o)
@@ -524,19 +578,19 @@ def _suppress_yo_replacement(original, result):
             orig_len = i2 - i1
             res_len = j2 - j1
             if res_len > orig_len:
-                for r in res_chars[j1 + orig_len:j2]:
-                    out.append(r.translate(_YO_MAP) if r in 'ёЁ' else r)
+                for r in res_chars[j1 + orig_len : j2]:
+                    out.append(r.translate(_YO_MAP) if r in "ёЁ" else r)
             elif orig_len > res_len:
                 pass
-        elif op == 'insert':
+        elif op == "insert":
             for r in res_chars[j1:j2]:
-                out.append(r.translate(_YO_MAP) if r in 'ёЁ' else r)
-        elif op == 'delete':
+                out.append(r.translate(_YO_MAP) if r in "ёЁ" else r)
+        elif op == "delete":
             pass
-    return ''.join(out)
+    return "".join(out)
 
 
-_ALL_QUOTES = set('«»„\u201c\u201d\u2018\u2019\u2039\u203a"\'')
+_ALL_QUOTES = set("«»„\u201c\u201d\u2018\u2019\u2039\u203a\"'")
 
 
 def _suppress_quote_changes(original, corrected):
@@ -554,9 +608,9 @@ def _suppress_quote_changes(original, corrected):
     matcher = difflib.SequenceMatcher(None, original, corrected)
     out = []
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             out.append(original[i1:i2])
-        elif op == 'replace':
+        elif op == "replace":
             orig_chunk = original[i1:i2]
             corr_chunk = corrected[j1:j2]
             chars = []
@@ -565,14 +619,14 @@ def _suppress_quote_changes(original, corrected):
                     chars.append(o)
                 else:
                     chars.append(c)
-            out.append(''.join(chars))
+            out.append("".join(chars))
             if len(corr_chunk) > len(orig_chunk):
-                out.append(corr_chunk[len(orig_chunk):])
-        elif op == 'delete':
+                out.append(corr_chunk[len(orig_chunk) :])
+        elif op == "delete":
             out.append(original[i1:i2])
-        elif op == 'insert':
+        elif op == "insert":
             out.append(corrected[j1:j2])
-    return ''.join(out)
+    return "".join(out)
 
 
 def _strict_protect_quotes(original, corrected):
@@ -592,9 +646,9 @@ def _strict_protect_quotes(original, corrected):
     sm = difflib.SequenceMatcher(None, orig_chars, corr_chars)
     out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             out.extend(orig_chars[i1:i2])
-        elif op == 'replace':
+        elif op == "replace":
             for o, c in zip(orig_chars[i1:i2], corr_chars[j1:j2]):
                 if o in _ALL_QUOTES or c in _ALL_QUOTES:
                     out.append(o)
@@ -603,24 +657,24 @@ def _strict_protect_quotes(original, corrected):
             orig_len = i2 - i1
             corr_len = j2 - j1
             if corr_len > orig_len:
-                for c in corr_chars[j1 + orig_len:j2]:
+                for c in corr_chars[j1 + orig_len : j2]:
                     if c not in _ALL_QUOTES:
                         out.append(c)
-        elif op == 'insert':
+        elif op == "insert":
             for c in corr_chars[j1:j2]:
                 if c not in _ALL_QUOTES:
                     out.append(c)
-        elif op == 'delete':
+        elif op == "delete":
             chunk = orig_chars[i1:i2]
             # Восстанавливаем удалённые символы только если среди них есть кавычка —
             # иначе ветка откатывала бы любые корректные удаления букв
             # (напр., "отфвыветственность" → "ответственность").
             if any(c in _ALL_QUOTES for c in chunk):
                 out.extend(chunk)
-    return ''.join(out)
+    return "".join(out)
 
 
-_INITIALS_RE = re.compile(r'(?=([А-Яа-яЁёA-Za-z]\.[А-Яа-яЁёA-Za-z]))')
+_INITIALS_RE = re.compile(r"(?=([А-Яа-яЁёA-Za-z]\.[А-Яа-яЁёA-Za-z]))")
 
 
 def _suppress_space_in_initials(original, corrected):
@@ -637,12 +691,13 @@ def _suppress_space_in_initials(original, corrected):
         return corrected
     for m in _INITIALS_RE.finditer(original):
         pattern = m.group(1)
-        spaced = pattern[0] + '. ' + pattern[2]
+        spaced = pattern[0] + ". " + pattern[2]
         corrected = corrected.replace(spaced, pattern)
     return corrected
 
 
 # ─── Общая нормализация ────────────────────────────────────────────────
+
 
 def _normalize_corrected(original, corrected, strict=False):
     """Нормализовать исправленный текст: подавить косметические изменения.
@@ -674,9 +729,8 @@ def _normalize_corrected(original, corrected, strict=False):
     # 1. Привести регистр первой буквы к оригиналу
     oi = next((i for i, c in enumerate(original) if c.isalpha()), -1)
     ri = next((i for i, c in enumerate(result) if c.isalpha()), -1)
-    if (oi >= 0 and ri >= 0
-            and result[ri].lower() == original[oi].lower()):
-        result = result[:ri] + original[oi] + result[ri + 1:]
+    if oi >= 0 and ri >= 0 and result[ri].lower() == original[oi].lower():
+        result = result[:ri] + original[oi] + result[ri + 1 :]
 
     # 2. Заменить хвостовую пунктуацию на оригинальную
     i = len(original)
@@ -700,9 +754,9 @@ def _normalize_corrected(original, corrected, strict=False):
     sm = difflib.SequenceMatcher(None, orig_chars, res_chars)
     out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
-        if op == 'equal':
+        if op == "equal":
             out.extend(res_chars[j1:j2])
-        elif op == 'replace':
+        elif op == "replace":
             for o, r in zip(orig_chars[i1:i2], res_chars[j1:j2]):
                 if o.isupper() and r.islower() and o.lower() == r:
                     out.append(o)
@@ -711,12 +765,12 @@ def _normalize_corrected(original, corrected, strict=False):
             res_len = j2 - j1
             orig_len = i2 - i1
             if res_len > orig_len:
-                out.extend(res_chars[j1 + orig_len:j2])
-        elif op == 'insert':
+                out.extend(res_chars[j1 + orig_len : j2])
+        elif op == "insert":
             out.extend(res_chars[j1:j2])
-        elif op == 'delete':
+        elif op == "delete":
             pass
-    result = ''.join(out)
+    result = "".join(out)
 
     # 5. Полная защита двоеточий
     result = _protect_colons(original, result)
@@ -743,6 +797,7 @@ def _normalize_corrected(original, corrected, strict=False):
 
 # ─── Аудиторский формат ────────────────────────────────────────────────
 
+
 def _expand_abbreviation(text, pattern, replacement):
     """Раскрыть сокращение, сохраняя регистр первой буквы.
 
@@ -754,11 +809,13 @@ def _expand_abbreviation(text, pattern, replacement):
     Returns:
         str: Текст с раскрытым сокращением.
     """
+
     def _replacer(m):
         matched = m.group()
         if matched[0].isupper():
             return replacement[0].upper() + replacement[1:]
         return replacement
+
     return re.compile(pattern, re.IGNORECASE).sub(_replacer, text)
 
 
@@ -778,23 +835,38 @@ def _apply_auditor_format(text):
     Returns:
         str: Текст в аудиторском формате.
     """
-    text = re.sub(r'([Пп]риложени[еяюий])\s*№\s*', r'\1 ', text)
-    text = _expand_abbreviation(text, r'\bв\s+т\.ч\.', 'в том числе')
-    text = _expand_abbreviation(text, r'\bт\.е\.', 'то есть')
-    text = re.sub(r'\bруб\.', '₽', text)
-    text = re.sub(r'\bрублей\b', '₽', text)
-    text = re.sub(r'\bрубли\b', '₽', text)
-    text = re.sub(r'\bмлн\.\s*₽', 'млн ₽', text)
-    text = re.sub(r'\bмлрд\.\s*₽', 'млрд ₽', text)
-    text = re.sub(r'\bтыс\s+₽', 'тыс. ₽', text)
-    text = re.sub(r'№\s+(\d)', r'№\1', text)
+    text = re.sub(
+        r"([Пп]риложени(?:е|я|ю|и|й|ем|ям|ями|ях))\s*№\s*",
+        r"\1 ",
+        text,
+    )
+    text = _expand_abbreviation(text, r"\bв\s+т\.ч\.", "в том числе")
+    text = _expand_abbreviation(text, r"\bт\.е\.", "то есть")
+    text = re.sub(r"\bруб\.", "₽", text)
+    text = re.sub(r"\bруб\b", "₽", text)
+    text = re.sub(r"\bрублей\b", "₽", text)
+    text = re.sub(r"\bрубли\b", "₽", text)
+    text = re.sub(r"\bмлн\.\s*₽", "млн ₽", text)
+    text = re.sub(r"\bмлрд\.\s*₽", "млрд ₽", text)
+    text = re.sub(r"\bтыс\s+₽", "тыс. ₽", text)
+    text = re.sub(r"№\s+(\d)", r"№\1", text)
     return text
 
 
 # ─── Асинхронная проверка ──────────────────────────────────────────────
 
-def check_sentences_async(sentences, on_progress, on_complete, on_error=None, on_start=None,
-                          adapter_name=None, strict=False, auditor_format=False, word_blocklist=None):
+
+def check_sentences_async(
+    sentences,
+    on_progress,
+    on_complete,
+    on_error=None,
+    on_start=None,
+    adapter_name=None,
+    strict=False,
+    auditor_format=False,
+    word_blocklist=None,
+):
     """Асинхронная проверка списка предложений в фоновом потоке.
 
     Поток обработки для каждого предложения:
@@ -824,7 +896,9 @@ def check_sentences_async(sentences, on_progress, on_complete, on_error=None, on
 
     def worker():
         try:
-            logger.info("worker started, %d sentences, adapter=%s", len(sentences), adapter_name)
+            logger.info(
+                "worker started, %d sentences, adapter=%s", len(sentences), adapter_name
+            )
             checker = SpellChecker.get_instance()
             checker.load_model(adapter_name=adapter_name)
 
@@ -844,14 +918,18 @@ def check_sentences_async(sentences, on_progress, on_complete, on_error=None, on
                 corrected = _protect_tokens(original, corrected)
                 logger.debug("after protect_tok:  %r", corrected[:120])
                 if word_blocklist:
-                    corrected = _protect_word_blocklist(original, corrected, word_blocklist)
+                    corrected = _protect_word_blocklist(
+                        original, corrected, word_blocklist
+                    )
                     logger.debug("after blocklist:    %r", corrected[:120])
                 effective_strict = strict or auditor_format
                 if effective_strict:
                     corrected = _strict_protect(original, corrected)
                     logger.debug("after strict_prot:  %r", corrected[:120])
                 corrected_pre_norm = corrected
-                corrected = _normalize_corrected(original, corrected, strict=effective_strict)
+                corrected = _normalize_corrected(
+                    original, corrected, strict=effective_strict
+                )
                 logger.debug("after normalize:    %r", corrected[:120])
                 if auditor_format:
                     corrected = _apply_auditor_format(corrected)
@@ -863,18 +941,28 @@ def check_sentences_async(sentences, on_progress, on_complete, on_error=None, on
 
                 has_error = corrected != original
                 if not has_error:
+
                     def _mid_commas(text):
-                        return text.rstrip('.,;:!?…—–- ').count(',')
+                        return text.rstrip(".,;:!?…—–- ").count(",")
+
                     if _mid_commas(original) != _mid_commas(corrected_pre_norm):
                         has_error = True
-                        corrected = _apply_only_comma_changes(original, corrected_pre_norm)
+                        corrected = _apply_only_comma_changes(
+                            original, corrected_pre_norm
+                        )
                         if corrected == original:
-                            logger.debug("_apply_only_comma_changes: no word-level comma diff found, "
-                                         "falling back to pre_norm")
+                            logger.debug(
+                                "_apply_only_comma_changes: no word-level comma diff found, "
+                                "falling back to pre_norm"
+                            )
                             corrected = corrected_pre_norm
                         else:
-                            logger.debug("has_error forced True: mid-comma count changed "
-                                         "(%d→%d), applied only-comma fix", _mid_commas(original), _mid_commas(corrected_pre_norm))
+                            logger.debug(
+                                "has_error forced True: mid-comma count changed "
+                                "(%d→%d), applied only-comma fix",
+                                _mid_commas(original),
+                                _mid_commas(corrected_pre_norm),
+                            )
                 on_progress(idx, original, corrected, has_error)
 
             on_complete()

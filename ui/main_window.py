@@ -137,15 +137,15 @@ class MainWindow(tk.Tk):
     def _preload_model_in_background(self):
         """Загрузить ML-модель в фоновом потоке (не блокирует UI).
 
-        Показывает overlay «Загрузка модели…» в центральном поле, чтобы
-        пользователь видел, что приложение готовится, а не «зависло».
+        Загрузка идёт молча — без модального overlay. Интерфейс остаётся
+        отзывчивым; если пользователь успеет запустить проверку до того,
+        как модель догрузится, worker дождётся её сам (через guard внутри
+        load_model).
         """
         import spell_checker
 
         if spell_checker.is_model_loaded():
             return
-
-        self.overlay.show("Загрузка модели, подождите…", cancelable=False)
 
         def _load():
             try:
@@ -153,8 +153,6 @@ class MainWindow(tk.Tk):
                 logger.info("Model preloaded in background")
             except Exception:
                 logger.exception("Model preload failed")
-            finally:
-                self.after(0, self.overlay.hide)
 
         threading.Thread(target=_load, daemon=True).start()
 
@@ -324,7 +322,7 @@ class MainWindow(tk.Tk):
         self.find_button = RibbonButton(
             self.primary_row,
             icon_key="find",
-            text="Найти",
+            text="Начать",
             command=self.find_documents,
             icon_size=icons.ICON_LG,
             orient="vertical",
@@ -348,7 +346,7 @@ class MainWindow(tk.Tk):
         self.check_button = RibbonButton(
             self.primary_row,
             icon_key="check_all",
-            text="Весь текст",
+            text="Проверить все",
             command=self.check_selected_document,
             icon_size=icons.ICON_LG,
             orient="vertical",
@@ -358,7 +356,7 @@ class MainWindow(tk.Tk):
         self.check_selection_button = RibbonButton(
             self.primary_row,
             icon_key="check_selection",
-            text="Фрагмент",
+            text="Пров. фрагмент",
             command=self.check_selected_fragment,
             icon_size=icons.ICON_LG,
             orient="vertical",
@@ -463,7 +461,7 @@ class MainWindow(tk.Tk):
         self.errors_mode_button = RibbonButton(
             self.primary_row,
             icon_key="errors_mode",
-            text="Исправления",
+            text="Правки",
             command=self._toggle_errors_view,
             icon_size=icons.ICON_SM,
             orient="vertical",
@@ -630,8 +628,8 @@ class MainWindow(tk.Tk):
             self.check_button.set_text("Проверяю...")
             self.check_selection_button.set_text("Проверяю...")
         else:
-            self.check_button.set_text("Весь текст")
-            self.check_selection_button.set_text("Фрагмент")
+            self.check_button.set_text("Проверить все")
+            self.check_selection_button.set_text("Пров. фрагмент")
         self.check_button.set_enabled(has_doc and not is_excel)
         self.check_selection_button.set_enabled(has_doc)
 
