@@ -24,6 +24,7 @@ ABBREV_PATTERN = re.compile(
 
 _LETTER_RE = re.compile(r'[A-Za-zА-Яа-яЁё]')
 _SENT_END_RE = re.compile(r'[.!?…]+')
+_CLOSING_PUNCT = '»"\'’”)]›』」'
 
 
 def starts_with_lower(text: str) -> bool:
@@ -67,6 +68,8 @@ def split_into_sentences(text: str) -> list[tuple[int, int, str]]:
         last = 0
         for m in _SENT_END_RE.finditer(line_text):
             end = m.end()
+            while end < len(line_text) and line_text[end] in _CLOSING_PUNCT:
+                end += 1
             if end < len(line_text) and not line_text[end].isspace():
                 continue
             raw_fragments.append((line_start + last, line_start + end))

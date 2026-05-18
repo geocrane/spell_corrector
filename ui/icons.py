@@ -56,7 +56,7 @@ ICON_FALLBACK_TEXT: dict[str, str] = {
     "skip_tables": "▦",  # ▦
     "hide_clean": "\U0001f441",  # 👁
     "errors_mode": "⚠",  # ⚠
-    "revisions": "R",
+    "revisions": "W",
 }
 
 _CACHE: dict[tuple[str, int, str], "tk.PhotoImage"] = {}
@@ -77,7 +77,9 @@ def _try_import_pil():
     return _PIL_AVAILABLE
 
 
-def get_icon(key: str, size: int = ICON_LG, state: str = "normal") -> Optional["tk.PhotoImage"]:
+def get_icon(
+    key: str, size: int = ICON_LG, state: str = "normal"
+) -> Optional["tk.PhotoImage"]:
     """Лениво загрузить иконку по ключу, размеру и состоянию.
 
     Возвращает tk.PhotoImage, готовый к использованию в Label(image=...),
@@ -127,7 +129,9 @@ def get_icon(key: str, size: int = ICON_LG, state: str = "normal") -> Optional["
         _CACHE[cache_key] = photo
         return photo
     except Exception as exc:
-        logger.exception("Не удалось загрузить иконку %s (%s, %s): %s", key, path, state, exc)
+        logger.exception(
+            "Не удалось загрузить иконку %s (%s, %s): %s", key, path, state, exc
+        )
         return None
 
 

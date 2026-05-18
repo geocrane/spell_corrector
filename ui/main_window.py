@@ -204,10 +204,6 @@ class MainWindow(tk.Tk):
 
     def _on_check_started(self, total):
         def _update():
-            # Извлечение завершилось — overlay прогресса скрываем; во время
-            # самой проверки заглушка не нужна (плитки сами по себе наглядны).
-            self.overlay.hide()
-
             self.sentences = self.engine.sentences
             self.check_results = self.engine.check_results
             self.selected_sentence_index = None
@@ -218,9 +214,13 @@ class MainWindow(tk.Tk):
             self.current_view = "sentences"
             self._update_button_state()
 
-            for sentence in self.sentences:
-                self._create_sentence_tile_checking_ui(sentence)
+            # Bulk-создание плиток-плейсхолдеров под overlay, чтобы пользователь
+            # не видел, как они появляются по одной.
+            def _build():
+                for sentence in self.sentences:
+                    self._create_sentence_tile_checking_ui(sentence)
 
+            self._render_tiles_under_overlay(_build, "Подготовка предложений…")
             self.status_label.config(text=f"Проверка: 0/{total}")
 
         self.after(0, _update)
@@ -995,11 +995,26 @@ class MainWindow(tk.Tk):
         Перерисовка большого числа плиток занимает 1-3 сек и визуально лагает.
         Overlay скрывает процесс — пользователь видит уже готовый результат.
         """
-        self.overlay.show("Перерисовка интерфейса…", cancelable=False)
-        self.update()  # форсировать показ overlay до тяжёлой перерисовки
+        self._render_tiles_under_overlay(
+            self._show_sentences_from_cache, "Перерисовка интерфейса…"
+        )
+
+    def _render_tiles_under_overlay(self, builder, message: str) -> None:
+        """Выполнить bulk-перерисовку плиток с overlay поверх docs_frame.
+
+        Скрываем canvas-window с плитками на время сборки, чтобы Tkinter не
+        отрисовывал промежуточные кадры. Overlay показываем поверх Canvas и
+        форсируем idle-задачи, чтобы он реально появился до тяжёлой работы.
+        """
+        self.overlay.show(message, cancelable=False)
+        self.canvas.itemconfigure(self.canvas_window, state="hidden")
+        # update_idletasks — без обработки внешних событий, чтобы промежуточные
+        # кадры плиток не «протекли» во время сборки.
+        self.update_idletasks()
         try:
-            self._show_sentences_from_cache()
+            builder()
         finally:
+            self.canvas.itemconfigure(self.canvas_window, state="normal")
             self.overlay.hide()
 
     def _release_tile_click_lock(self):
