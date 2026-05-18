@@ -177,7 +177,11 @@ class MainWindow(tk.Tk):
         self.current_view = "sentences"
         self._update_button_state()
         self.status_label.config(text="⏳ Извлечение предложений...")
-        self.overlay.show("Извлечение предложений…", cancelable=False)
+        # Спинер не анимируется во время этой фазы: главный поток заблокирован
+        # синхронным COM-вызовом. Показываем только текст без замороженного глифа.
+        self.overlay.show(
+            "Извлечение предложений…", cancelable=False, show_spinner=False,
+        )
         self.update()  # полная перерисовка окна до COM-вызова
 
     def _on_extraction_progress(self, extracted, processed):
@@ -188,20 +192,22 @@ class MainWindow(tk.Tk):
         Обновление сообщения через self.after(0, ...) выполнится, когда
         Tk-цикл вернёт управление.
         """
+
         def _update():
             try:
                 self.overlay.update_message(f"Извлечено {extracted} предложений…")
             except tk.TclError:
                 pass
+
         self.after(0, _update)
 
-    def _on_documents_found(self, documents):
-        self.after(0, lambda: self._render_documents(documents))
+    def _on_documents_found(self, documents, warnings=None):
+        self.after(0, lambda: self._render_documents(documents, warnings or []))
 
-    def _on_documents_not_found(self):
+    def _on_documents_not_found(self, warnings=None):
         # Полная перерисовка с пустым списком: убирает зависшие плитки
         # от предыдущего поиска (например, если документы были закрыты).
-        self.after(0, lambda: self._render_documents([]))
+        self.after(0, lambda: self._render_documents([], warnings or []))
 
     def _on_check_started(self, total):
         def _update():
@@ -469,7 +475,7 @@ class MainWindow(tk.Tk):
         self.revisions_toggle = RibbonToggle(
             self.primary_row,
             icon_key="revisions",
-            text="Word ревизии",
+            text="ревизии",
             command=self._on_toggle_revisions_mode,
             icon_size=icons.ICON_SM,
             orient="vertical",
@@ -480,11 +486,17 @@ class MainWindow(tk.Tk):
         # Перечень всех кнопок toolbar — для массовой блокировки/разблокировки
         # во время долгих операций (например, унификация форматирования).
         self._all_toolbar_buttons = [
-            self.find_button, self.back_button,
-            self.check_button, self.check_selection_button,
-            self.format_all_btn, *self.format_buttons.values(),
-            self.auditor_toggle, self.skip_tables_toggle,
-            self.hide_clean_toggle, self.errors_mode_button, self.revisions_toggle,
+            self.find_button,
+            self.back_button,
+            self.check_button,
+            self.check_selection_button,
+            self.format_all_btn,
+            *self.format_buttons.values(),
+            self.auditor_toggle,
+            self.skip_tables_toggle,
+            self.hide_clean_toggle,
+            self.errors_mode_button,
+            self.revisions_toggle,
         ]
 
         # Фрейм выбора адаптера
@@ -598,7 +610,9 @@ class MainWindow(tk.Tk):
             self.back_button.set_enabled(not extracting)
             self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
             self.hide_clean_toggle.pack(in_=self.primary_row, side=tk.LEFT, padx=4)
-            self.errors_mode_button.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 4))
+            self.errors_mode_button.pack(
+                in_=self.primary_row, side=tk.RIGHT, padx=(0, 4)
+            )
             self._refresh_errors_mode_button()
             self._refresh_hide_clean_toggle()
 
@@ -889,7 +903,7 @@ class MainWindow(tk.Tk):
 
     # ─── Рендер документов ──────────────────────────────────────────────
 
-    def _render_documents(self, documents):
+    def _render_documents(self, documents, warnings=None):
         """Отрисовать список документов."""
         self._stop_spinner()
         self._cancel_worker_ui()
@@ -918,9 +932,10 @@ class MainWindow(tk.Tk):
                 1 for d in documents if d.get("type") == provider.doc_type
             )
         status_parts = [f"{t}: {c}" for t, c in counts.items() if c > 0]
-        self.status_label.config(
-            text=", ".join(status_parts) if status_parts else "Документы не найдены"
-        )
+        base_text = ", ".join(status_parts) if status_parts else "Документы не найдены"
+        if warnings:
+            base_text = f"{base_text} · {warnings[0]}" if status_parts else warnings[0]
+        self.status_label.config(text=base_text)
 
     def _create_document_tile_ui(self, doc):
         """Создать плитку документа."""
@@ -942,7 +957,10 @@ class MainWindow(tk.Tk):
             is_active_check=is_active,
         )
         self.tile_frames[id(doc)] = tile
-        if status_label:
+        # doc_status_label обновляется live (прогресс проверки, финальный бейдж).
+        # Подвязываем только к выбранной плитке — статичные бейджи остальных
+        # документов уже отрисованы с кешированными значениями.
+        if status_label and is_selected:
             self.doc_status_label = status_label
 
     def _on_tile_click(self, doc):
@@ -1220,7 +1238,8 @@ class MainWindow(tk.Tk):
         # Проверяем, что сейчас реально упаковано и в каком порядке.
         # winfo_manager() == 'pack' говорит о том, что виджет виден.
         current_packed = [
-            idx for idx, tile in sorted(self.sentence_tiles.items())
+            idx
+            for idx, tile in sorted(self.sentence_tiles.items())
             if tile.winfo_exists() and tile.winfo_manager() == "pack"
         ]
 
@@ -1372,6 +1391,7 @@ class MainWindow(tk.Tk):
         При входе автоматически включается отображение ревизий в Word
         (запись ревизий уже выполняется при каждом Apply).
         """
+
         def _build():
             self.current_view = "errors"
             self.selected_sentence_index = None

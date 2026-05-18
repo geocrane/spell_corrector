@@ -85,6 +85,7 @@ class BusyOverlay:
         *,
         cancelable: bool = True,
         on_cancel=None,
+        show_spinner: bool = True,
     ) -> None:
         """Показать overlay поверх parent.
 
@@ -92,6 +93,10 @@ class BusyOverlay:
             message: Сообщение в центре.
             cancelable: Если True И задан on_cancel — снизу кнопка «Остановить».
             on_cancel: Колбэк по клику «Остановить». Вызывается один раз.
+            show_spinner: Если False — глиф-спинер скрыт и не анимируется.
+                Используется для фаз, где главный Tk-поток заблокирован
+                синхронным COM-вызовом и after-таймер всё равно не сработает
+                (например, «Извлечение предложений»).
         """
         if self._frame is None:
             self._build()
@@ -99,6 +104,13 @@ class BusyOverlay:
         self._on_cancel = on_cancel
         assert self._message_label is not None
         self._message_label.config(text=message)
+
+        assert self._spinner_label is not None
+        if show_spinner:
+            # pack перед message_label, чтобы порядок сохранялся при повторных show()
+            self._spinner_label.pack_configure(before=self._message_label, pady=(0, 10))
+        else:
+            self._spinner_label.pack_forget()
 
         assert self._cancel_button is not None
         if cancelable and on_cancel is not None:
@@ -113,7 +125,8 @@ class BusyOverlay:
 
         self._spinner_index = 0
         self._cancel_spinner_job()
-        self._spinner_job = self._parent.after(SPINNER_DELAY, self._animate)
+        if show_spinner:
+            self._spinner_job = self._parent.after(SPINNER_DELAY, self._animate)
 
     def update_message(self, message: str) -> None:
         """Обновить текст сообщения (например, прогресс)."""

@@ -18,8 +18,8 @@ Engine — бизнес-логика приложения.
     engine.set_word_revisions_mode(on)
 
 События (генерирует Engine, подписывается UI):
-    documents_found(documents)
-    documents_not_found()
+    documents_found(documents, warnings)
+    documents_not_found(warnings)
     extraction_started()
     extraction_progress(extracted, processed)
     check_started(total)
@@ -137,11 +137,22 @@ class Engine:
         self.format_stats_cache = None
 
         self.documents = office_finder.find_all_documents()
+        warnings = self._collect_provider_warnings()
 
         if not self.documents:
-            self.events.emit("documents_not_found")
+            self.events.emit("documents_not_found", warnings=warnings)
         else:
-            self.events.emit("documents_found", documents=self.documents)
+            self.events.emit("documents_found", documents=self.documents, warnings=warnings)
+
+    def _collect_provider_warnings(self) -> list[str]:
+        """Собрать ненулевые last_error от всех провайдеров после find_documents."""
+        from core.providers import get_all_providers
+        warnings: list[str] = []
+        for provider in get_all_providers():
+            err = provider.get_last_error()
+            if err:
+                warnings.append(err)
+        return warnings
 
     # ─── Выбор документа ────────────────────────────────────────────────
 

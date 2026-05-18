@@ -134,6 +134,7 @@ class ExcelProvider(DocumentProvider):
 
     def find_documents(self) -> list[dict]:
         """Найти все открытые книги Excel."""
+        self._last_error = None
         try:
             app = win32com.client.GetActiveObject("Excel.Application")
         except pywintypes.com_error:
@@ -148,8 +149,13 @@ class ExcelProvider(DocumentProvider):
         except (pywintypes.com_error, AttributeError):
             hwnd = 0
 
+        # Если хотя бы одна книга оказалась недоступна (Excel в режиме редактирования
+        # ячейки блокирует весь COM-сервер), помечаем это в _last_error — движок
+        # покажет подсказку пользователю.
+        attempted = 0
         try:
             for wb in app.Workbooks:
+                attempted += 1
                 try:
                     name = wb.Name
                 except pywintypes.com_error:
@@ -163,6 +169,11 @@ class ExcelProvider(DocumentProvider):
                 })
         except pywintypes.com_error as e:
             logger.warning("Не удалось перебрать Workbooks: %s", e)
+            self._last_error = "Excel заблокирован — нажмите Esc в Excel и повторите поиск"
+            return docs
+
+        if attempted > 0 and not docs:
+            self._last_error = "Excel заблокирован — нажмите Esc в Excel и повторите поиск"
 
         return docs
 
