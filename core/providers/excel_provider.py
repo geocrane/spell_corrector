@@ -281,6 +281,16 @@ class ExcelProvider(DocumentProvider):
                 sheet_name = sheet.Name
             except pywintypes.com_error:
                 continue
+            # Обрезать выделение до реально заполненных ячеек — защита от
+            # случая, когда пользователь выделил целый столбец/строку.
+            try:
+                used = sheet.UsedRange
+                safe_area = app.Intersect(area, used)
+                if safe_area is None:
+                    continue
+                area = safe_area
+            except pywintypes.com_error:
+                pass
             self._extract_from_range(
                 workbook_name, sheet, sheet_name, area, sentences,
                 progress_callback=progress_callback, cancel_event=cancel_event,
@@ -313,9 +323,15 @@ class ExcelProvider(DocumentProvider):
         Каждые PROGRESS_INTERVAL ячеек вызывает progress_callback и проверяет
         cancel_event — это даёт UI шанс перерисоваться и обработать клик «Остановить».
         """
+        MAX_SAFE_CELLS = 50_000
         try:
             cells_count = rng.Cells.Count
             if cells_count == 0:
+                return
+            if cells_count > MAX_SAFE_CELLS:
+                logger.warning(
+                    "Диапазон содержит %d ячеек — пропускаем (слишком большой)", cells_count
+                )
                 return
         except pywintypes.com_error:
             return

@@ -135,17 +135,17 @@ class MainWindow(tk.Tk):
     # ─── Предзагрузка модели ────────────────────────────────────────────
 
     def _preload_model_in_background(self):
-        """Загрузить ML-модель в фоновом потоке (не блокирует UI).
+        """Загрузить ML-модель в фоновом потоке.
 
-        Загрузка идёт молча — без модального overlay. Интерфейс остаётся
-        отзывчивым; если пользователь успеет запустить проверку до того,
-        как модель догрузится, worker дождётся её сам (через guard внутри
-        load_model).
+        Пока модель грузится — показываем overlay-заглушку, чтобы
+        пользователь знал, что приложение ещё не готово к проверке.
         """
         import spell_checker
 
         if spell_checker.is_model_loaded():
             return
+
+        self.overlay.show("Загрузка модели…", cancelable=False, show_spinner=True)
 
         def _load():
             try:
@@ -153,6 +153,8 @@ class MainWindow(tk.Tk):
                 logger.info("Model preloaded in background")
             except Exception:
                 logger.exception("Model preload failed")
+            finally:
+                self.after(0, self.overlay.hide)
 
         threading.Thread(target=_load, daemon=True).start()
 
@@ -322,7 +324,7 @@ class MainWindow(tk.Tk):
         self.find_button = RibbonButton(
             self.primary_row,
             icon_key="find",
-            text="Начать",
+            text="Документы",
             command=self.find_documents,
             icon_size=icons.ICON_LG,
             orient="vertical",
@@ -611,8 +613,10 @@ class MainWindow(tk.Tk):
             self.errors_mode_button.pack(
                 in_=self.primary_row, side=tk.RIGHT, padx=(0, 4)
             )
+            self.revisions_toggle.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 0))
             self._refresh_errors_mode_button()
             self._refresh_hide_clean_toggle()
+            self._refresh_revisions_toggle()
 
     def _refresh_check_buttons(self):
         """Обновить состояние кнопок проверки (активна/неактивна).
@@ -1394,11 +1398,7 @@ class MainWindow(tk.Tk):
             self.current_view = "errors"
             self.selected_sentence_index = None
 
-            # Включить отображение ревизий в Word и синхронизировать галочку.
-            # Для Excel пропускаем — Track Changes там нет.
-            doc = self.engine.selected_doc or {}
-            if doc.get("type") != "excel" and not self.engine.revisions_mode:
-                self.engine.set_word_revisions_mode(True)
+            # Синхронизировать кнопку ревизий с реальным состоянием Word.
             self.revisions_mode_var.set(self.engine.revisions_mode)
             self._update_button_state()
             self._refresh_doc_dependent_options()
@@ -1431,10 +1431,7 @@ class MainWindow(tk.Tk):
         self._render_tiles_under_overlay(_build, "Подготовка списка ошибок…")
 
     def _exit_errors_view(self):
-        """Кнопка «Назад» в режиме ошибок — выключить ревизии, вернуться к sentences."""
-        if self.engine.revisions_mode:
-            self.engine.set_word_revisions_mode(False)
-            self.revisions_mode_var.set(False)
+        """Кнопка «Назад» в режиме ошибок — вернуться к sentences."""
         self._show_sentences_from_cache()
 
     def _on_word_correction_click(self, correction):

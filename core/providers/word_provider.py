@@ -62,7 +62,9 @@ def _merge_false_splits(sentences, doc_com):
                 gap_text = doc_com.Range(cur["range_end"], nxt["range_start"]).Text or ""
             except Exception:
                 gap_text = ""
-            if '\x07' not in gap_text:
+            # \x07 — разделитель ячеек таблицы; \r — конец абзаца (буллит/параграф).
+            # Через оба символа склейка запрещена — каждый абзац отдельное предложение.
+            if '\x07' not in gap_text and '\r' not in gap_text:
                 if _starts_with_lower(nxt["text"]):
                     should_merge = True
                 elif _ABBREV_PATTERN.search(cur["text"]):
@@ -353,6 +355,31 @@ def _preserve_bullet_prefix(old_text, new_text):
     return new_text
 
 
+_SENTENCE_FINAL = frozenset('.!?…')
+
+
+def _preserve_bullet_ending(old_text, new_text):
+    """Восстановить концевую пунктуацию буллита, если T5 изменил её.
+
+    Буллиты часто заканчиваются на ; , : или вообще без знака.
+    T5 нередко добавляет точку — это нежелательно для элементов списка.
+    Если оригинал НЕ заканчивался на . ! ? … — восстанавливаем исходное окончание.
+    """
+    if not old_text or not new_text:
+        return new_text
+    old_stripped = old_text.rstrip()
+    if not old_stripped or old_stripped[-1] in _SENTENCE_FINAL:
+        return new_text  # обычное предложение — не трогаем
+    old_last = old_stripped[-1]
+    new_stripped = new_text.rstrip()
+    if not new_stripped:
+        return new_text
+    if new_stripped[-1] == '.' and old_last != '.':
+        trailing = new_text[len(new_stripped):]
+        return new_stripped[:-1] + old_last + trailing
+    return new_text
+
+
 def _after_replacement(sentence, new_text, rng_start, old_end, delta, all_sentences):
     """Обновить позиции после замены."""
     sentence["range_start"] = rng_start
@@ -608,6 +635,7 @@ class WordProvider(DocumentProvider):
 
             ref_text = old_text if old_text is not None else sentence.get("text", "")
             new_text = _preserve_bullet_prefix(ref_text, new_text)
+            new_text = _preserve_bullet_ending(ref_text, new_text)
 
             rng_start = rng.Start
             old_end = rng.End
@@ -787,22 +815,20 @@ class WordProvider(DocumentProvider):
             except Exception:
                 doc_len_before = None
 
+            # Запрашиваем только ревизии целевого диапазона — O(M) вместо O(N)
+            # по всему документу. Каждый COM-вызов пересекает границу процессов,
+            # поэтому разница заметна даже при десятке ревизий.
+            to_reject = []
             try:
-                total = int(doc_com.Revisions.Count)
+                range_rng = doc_com.Range(range_start, range_end_after)
+                range_revisions = range_rng.Revisions
+                count_in_range = int(range_revisions.Count)
+                for i in range(1, count_in_range + 1):
+                    rev = range_revisions.Item(i)
+                    rev_start = int(rev.Range.Start)
+                    to_reject.append((rev_start, rev))
             except Exception:
                 return {**empty_fail, "reason": "no_revisions_api"}
-
-            to_reject = []
-            # Итерируем по 1-based индексу — стандарт для Word COM.
-            for i in range(1, total + 1):
-                try:
-                    rev = doc_com.Revisions.Item(i)
-                    rev_range = rev.Range
-                    rev_start = int(rev_range.Start)
-                except Exception:
-                    continue
-                if range_start <= rev_start < range_end_after:
-                    to_reject.append((rev_start, rev))
 
             if not to_reject:
                 return {**empty_fail, "reason": "not_found"}
