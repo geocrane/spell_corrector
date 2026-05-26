@@ -88,6 +88,21 @@ def replace_sentence_text_with_corrections(
     return {"ok": False, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
 
 
+def reject_sentence_revisions(doc, sentence, marker, original_text, all_sentences=None):
+    """Откатить ревизии предложения через Revision.Reject() (Word).
+
+    Используется для надёжной отмены применённых исправлений с TrackRevisions.
+    Для не-Word провайдеров возвращает reason='unsupported'.
+    """
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.reject_sentence_revisions(
+            doc, sentence, marker, original_text, all_sentences,
+        )
+    return {"ok": False, "reason": "no_provider",
+            "delta": 0, "old_end": 0, "rng_start": 0}
+
+
 def navigate_to_range(doc, start, end):
     """Выделить произвольный диапазон в документе."""
     provider = get_provider(doc.get("type", ""))

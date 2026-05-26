@@ -638,6 +638,21 @@ class WordProvider(DocumentProvider):
                 except Exception as e:
                     logger.debug("не удалось прочитать Revisions.Count: %s", e)
 
+            def _make_marker(initial_rng_start, initial_old_end, current_delta):
+                """Снапшот ревизий, созданных операцией, для будущего Reject."""
+                if not track_revisions or revisions_before is None:
+                    return None
+                try:
+                    count_after = int(doc_com.Revisions.Count)
+                except Exception:
+                    return None
+                return {
+                    "count_before": revisions_before,
+                    "count_after": count_after,
+                    "range_start": initial_rng_start,
+                    "range_end_after": initial_old_end + current_delta,
+                }
+
             corrections = []
             if old_text is not None:
                 corrections = build_word_corrections(
@@ -656,6 +671,7 @@ class WordProvider(DocumentProvider):
                     return {
                         "ok": True, "corrections": corrections,
                         "delta": delta, "old_end": old_end, "rng_start": rng_start,
+                        "revisions_marker": _make_marker(rng_start, old_end, delta),
                     }
 
                 # Перепоиск range на случай частичного применения и отката
@@ -675,6 +691,7 @@ class WordProvider(DocumentProvider):
                     return {
                         "ok": True, "corrections": corrections,
                         "delta": delta, "old_end": old_end, "rng_start": rng_start,
+                        "revisions_marker": _make_marker(rng_start, old_end, delta),
                     }
 
                 rng = _find_sentence_range(doc_com, sentence, expected_text=expected)
@@ -709,6 +726,7 @@ class WordProvider(DocumentProvider):
             return {
                 "ok": True, "corrections": corrections,
                 "delta": delta, "old_end": old_end, "rng_start": rng_start,
+                "revisions_marker": _make_marker(rng_start, old_end, delta),
             }
         except Exception as e:
             logger.error("replace_sentence_text_with_corrections error: %s", e)
@@ -719,6 +737,113 @@ class WordProvider(DocumentProvider):
                     doc_com.TrackRevisions = prev_track
                 except Exception:
                     pass
+
+    def reject_sentence_revisions(
+        self,
+        doc: dict,
+        sentence: dict,
+        marker: dict,
+        original_text: str,
+        all_sentences: Optional[list] = None,
+    ) -> dict:
+        """Откатить ревизии предложения через Revision.Reject().
+
+        Word сам корректно восстановит исходный текст: для insertion-ревизии
+        удалит вставленные символы, для deletion-ревизии вернёт зачёркнутые.
+        Это надёжнее, чем повторное вычисление обратного diff поверх документа
+        в состоянии TrackRevisions.
+
+        Args:
+            doc: дескриптор документа.
+            sentence: предложение для пост-обновления позиций.
+            marker: revisions_marker, сохранённый при apply.
+            original_text: исходный текст предложения (до Apply) — записывается
+                в sentence["text"] после успешного Reject.
+            all_sentences: для сдвига позиций других предложений.
+
+        Returns:
+            dict с ключами:
+                ok (bool), reason (str, при ok=False),
+                delta (int), old_end (int), rng_start (int).
+        """
+        empty_fail = {"ok": False, "delta": 0, "old_end": 0, "rng_start": 0}
+        if not marker:
+            return {**empty_fail, "reason": "no_marker"}
+
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return {**empty_fail, "reason": "no_doc"}
+
+        try:
+            range_start = int(marker.get("range_start", 0))
+            range_end_after = int(marker.get("range_end_after", 0))
+            expected_count = int(marker.get("count_after", 0)) - int(marker.get("count_before", 0))
+
+            if expected_count <= 0 or range_end_after <= range_start:
+                return {**empty_fail, "reason": "invalid_marker"}
+
+            try:
+                doc_len_before = int(doc_com.Range().End)
+            except Exception:
+                doc_len_before = None
+
+            try:
+                total = int(doc_com.Revisions.Count)
+            except Exception:
+                return {**empty_fail, "reason": "no_revisions_api"}
+
+            to_reject = []
+            # Итерируем по 1-based индексу — стандарт для Word COM.
+            for i in range(1, total + 1):
+                try:
+                    rev = doc_com.Revisions.Item(i)
+                    rev_range = rev.Range
+                    rev_start = int(rev_range.Start)
+                except Exception:
+                    continue
+                if range_start <= rev_start < range_end_after:
+                    to_reject.append((rev_start, rev))
+
+            if not to_reject:
+                return {**empty_fail, "reason": "not_found"}
+
+            if len(to_reject) != expected_count:
+                logger.warning(
+                    "reject_sentence_revisions: ожидали %s ревизий, нашли %s "
+                    "(документ изменён вручную?)",
+                    expected_count, len(to_reject),
+                )
+                return {**empty_fail, "reason": "count_mismatch"}
+
+            # Reject в обратном порядке — чтобы позиции ещё-не-отвергнутых
+            # ревизий не сдвигались.
+            to_reject.sort(key=lambda x: x[0], reverse=True)
+            for _, rev in to_reject:
+                try:
+                    rev.Reject()
+                except Exception as e:
+                    logger.error("Revision.Reject() failed: %s", e)
+                    return {**empty_fail, "reason": "reject_exception"}
+
+            if doc_len_before is not None:
+                try:
+                    delta = int(doc_com.Range().End) - doc_len_before
+                except Exception:
+                    delta = 0
+            else:
+                delta = 0
+
+            _after_replacement(
+                sentence, original_text, range_start, range_end_after, delta, all_sentences,
+            )
+
+            return {
+                "ok": True, "delta": delta,
+                "old_end": range_end_after, "rng_start": range_start,
+            }
+        except Exception as e:
+            logger.error("reject_sentence_revisions error: %s", e)
+            return {**empty_fail, "reason": "exception"}
 
     def navigate_to_range(self, doc: dict, start: int, end: int) -> bool:
         doc_com = self.get_doc_com(doc)

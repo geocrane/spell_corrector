@@ -185,6 +185,28 @@ class DocumentProvider(ABC):
         ok = self.replace_sentence_text(doc, sentence, new_text, old_text, all_sentences)
         return {"ok": ok, "corrections": [], "delta": 0, "old_end": 0, "rng_start": 0}
 
+    def reject_sentence_revisions(
+        self,
+        doc: dict,
+        sentence: dict,
+        marker: dict,
+        original_text: str,
+        all_sentences: Optional[list] = None,
+    ) -> dict:
+        """Откатить ревизии предложения через Word Revision.Reject().
+
+        Поддерживается только провайдерами, которые работают с TrackRevisions
+        (Word). Остальные возвращают reason='unsupported'.
+
+        Returns:
+            dict с ключами ok (bool), reason (str, при ok=False),
+            delta (int), old_end (int), rng_start (int).
+        """
+        return {
+            "ok": False, "reason": "unsupported",
+            "delta": 0, "old_end": 0, "rng_start": 0,
+        }
+
     def navigate_to_correction(self, doc: dict, correction: dict) -> bool:
         """Выделить диапазон конкретной пословной правки.
 

@@ -380,54 +380,114 @@ class Engine:
             original = result["original"]
             corrected = result["corrected"]
 
-            if apply:
-                new_text, old_text = corrected, original
-            else:
-                new_text, old_text = original, corrected
-
-            replace_result = office_finder.replace_sentence_text_with_corrections(
-                self.selected_doc, sentence, new_text,
-                old_text=old_text, all_sentences=self.sentences,
-                track_revisions=True,
+            is_word_doc = bool(
+                self.selected_doc and self.selected_doc.get("type") == "word"
             )
-            ok = replace_result["ok"]
 
-            if ok:
-                result["state"] = "applied" if apply else "pending"
+            new_corrections: list = []
 
+            if not apply and is_word_doc and result.get("revisions_marker"):
+                # Надёжный путь отката для Word: отвергнуть ревизии,
+                # созданные при Apply. Word сам корректно вернёт оригинал.
+                op_result = office_finder.reject_sentence_revisions(
+                    self.selected_doc, sentence,
+                    result["revisions_marker"], original_text=original,
+                    all_sentences=self.sentences,
+                )
+                if not op_result.get("ok"):
+                    reason = op_result.get("reason", "unknown")
+                    logger.warning(
+                        "revert через Reject не удался (reason=%s) для index=%d",
+                        reason, index,
+                    )
+                    self.events.emit(
+                        "navigation_blocked",
+                        message="Не удалось отменить исправление: "
+                                "ревизии не найдены или документ был изменён вручную.",
+                    )
+                    return False
+                old_end = op_result.get("old_end", 0)
+                delta = op_result.get("delta", 0)
+                # Ревизии этого предложения отвергнуты — маркер больше не валиден.
+                result.pop("revisions_marker", None)
+            else:
+                # Старый путь: Apply, либо revert не-Word документа.
+                if apply:
+                    new_text, old_text = corrected, original
+                else:
+                    new_text, old_text = original, corrected
+
+                replace_result = office_finder.replace_sentence_text_with_corrections(
+                    self.selected_doc, sentence, new_text,
+                    old_text=old_text, all_sentences=self.sentences,
+                    track_revisions=True,
+                )
+                if not replace_result.get("ok"):
+                    return False
                 old_end = replace_result.get("old_end", 0)
                 delta = replace_result.get("delta", 0)
-
-                scope = None
-                if self.selected_doc and self.selected_doc.get("type") == "excel":
-                    scope = {
-                        "excel_workbook": sentence.get("workbook"),
-                        "excel_sheet": sentence.get("sheet"),
-                        "excel_cell_address": sentence.get("cell_address"),
-                    }
-
                 if apply:
-                    self._shift_word_corrections(old_end, delta, scope=scope)
-                    new_corrs = replace_result.get("corrections", []) or []
-                    for c in new_corrs:
-                        c["sentence_index"] = index
-                    self.word_corrections.extend(new_corrs)
-                else:
-                    self.word_corrections = [
-                        c for c in self.word_corrections
-                        if c.get("sentence_index") != index
-                    ]
-                    self._shift_word_corrections(old_end, delta, scope=scope)
+                    new_corrections = list(replace_result.get("corrections", []) or [])
+                    if is_word_doc:
+                        marker = replace_result.get("revisions_marker")
+                        if marker:
+                            result["revisions_marker"] = marker
 
-                self.events.emit("word_corrections_changed")
-                # Любое изменение текста инвалидирует все формат-снимки —
-                # позиции сегментов в snapshot.ranges больше не валидны.
-                self._invalidate_format_snapshots()
+            result["state"] = "applied" if apply else "pending"
 
-            return ok
+            scope = None
+            if self.selected_doc and self.selected_doc.get("type") == "excel":
+                scope = {
+                    "excel_workbook": sentence.get("workbook"),
+                    "excel_sheet": sentence.get("sheet"),
+                    "excel_cell_address": sentence.get("cell_address"),
+                }
+
+            if apply:
+                self._shift_word_corrections(old_end, delta, scope=scope)
+                if scope is None:
+                    self._shift_revisions_markers(index, old_end, delta)
+                for c in new_corrections:
+                    c["sentence_index"] = index
+                self.word_corrections.extend(new_corrections)
+            else:
+                self.word_corrections = [
+                    c for c in self.word_corrections
+                    if c.get("sentence_index") != index
+                ]
+                self._shift_word_corrections(old_end, delta, scope=scope)
+                if scope is None:
+                    self._shift_revisions_markers(index, old_end, delta)
+
+            self.events.emit("word_corrections_changed")
+            # Любое изменение текста инвалидирует все формат-снимки —
+            # позиции сегментов в snapshot.ranges больше не валидны.
+            self._invalidate_format_snapshots()
+
+            return True
         except Exception as e:
             logger.error("Ошибка применения/отката #%d: %s", index, e)
             return False
+
+    def _shift_revisions_markers(self, exclude_index: int, old_end: int, delta: int) -> None:
+        """Сдвинуть revisions_marker других применённых предложений после правки.
+
+        Маркер хранит абсолютные позиции диапазона ревизий в документе. Если
+        другое предложение модифицируется (Apply или Reject), его delta сдвигает
+        все позиции после old_end — соответственно, маркеры предложений после
+        old_end должны сдвинуться на ту же delta.
+        """
+        if delta == 0:
+            return
+        for idx, res in self.check_results.items():
+            if idx == exclude_index:
+                continue
+            marker = res.get("revisions_marker")
+            if not marker:
+                continue
+            if marker.get("range_start", 0) >= old_end:
+                marker["range_start"] += delta
+                marker["range_end_after"] += delta
 
     def _shift_word_corrections(self, old_end: int, delta: int, scope: dict | None = None) -> None:
         """Сдвинуть позиции уже сохранённых пословных правок после замены текста.
