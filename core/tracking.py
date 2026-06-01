@@ -1,23 +1,28 @@
 """
 Управление снимками документов для режима сравнения.
 
-Снимки хранятся в %TEMP%/spell_corrector_tracking/ как .docx-файлы.
-Индекс — index.json в той же директории.
+Снимки хранятся в userdata/snapshots/ как .docx-файлы (вне кода — переживают
+обновление приложения). Индекс — index.json в той же директории.
+
+В индексе хранится относительное имя файла (filename); абсолютный путь
+резолвится через SNAPSHOTS_DIR при чтении. Это делает снимки независимыми от
+расположения папки приложения. Поддерживается старая схема с ключом "path".
 """
 
 import json
 import os
 import shutil
-import tempfile
 from datetime import datetime
 
-TRACKING_DIR = os.path.join(tempfile.gettempdir(), "spell_corrector_tracking")
-INDEX_FILE = os.path.join(TRACKING_DIR, "index.json")
+from core import paths
+
+SNAPSHOTS_DIR = paths.SNAPSHOTS_DIR
+INDEX_FILE = paths.INDEX_FILE
 
 
 class TrackingManager:
     def __init__(self):
-        os.makedirs(TRACKING_DIR, exist_ok=True)
+        os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
         self._index = self._load_index()
 
     # ─── Индекс ─────────────────────────────────────────────────────────
@@ -46,6 +51,27 @@ class TrackingManager:
         name, _ = os.path.splitext(doc_name)
         return name
 
+    @staticmethod
+    def _resolve_path(entry: dict) -> str:
+        """Абсолютный путь к файлу снимка по записи индекса.
+
+        Новая схема — ключ "filename"; старая — "path" (резолвим по basename
+        в SNAPSHOTS_DIR, если исходный путь больше не существует).
+        """
+        filename = entry.get("filename")
+        if filename:
+            return os.path.join(SNAPSHOTS_DIR, filename)
+        old = entry.get("path", "")
+        if old and os.path.isfile(old):
+            return old
+        return os.path.join(SNAPSHOTS_DIR, os.path.basename(old))
+
+    def _public(self, entry: dict) -> dict:
+        """Запись с заполненным абсолютным path для UI-диалогов."""
+        out = dict(entry)
+        out["path"] = self._resolve_path(entry)
+        return out
+
     def _make_snapshot_path(self, doc_name: str, create_new: bool) -> str:
         """Вернуть путь для нового снимка.
 
@@ -53,14 +79,14 @@ class TrackingManager:
         create_new=True  → добавляем числовой суффикс _1, _2, …
         """
         base = self._base_name(doc_name)
-        primary = os.path.join(TRACKING_DIR, f"{base}.docx")
+        primary = os.path.join(SNAPSHOTS_DIR, f"{base}.docx")
 
         if not create_new:
             return primary
 
         i = 1
         while True:
-            candidate = os.path.join(TRACKING_DIR, f"{base}_{i}.docx")
+            candidate = os.path.join(SNAPSHOTS_DIR, f"{base}_{i}.docx")
             if not os.path.isfile(candidate):
                 return candidate
             i += 1
@@ -80,13 +106,13 @@ class TrackingManager:
         Returns: list of {original_doc_name, path, display_name, created_at}
         """
         return [
-            e for e in self._index["snapshots"]
+            self._public(e) for e in self._index["snapshots"]
             if e["original_doc_name"] == doc_name
         ]
 
     def list_all_snapshots(self) -> list[dict]:
         """Все сохранённые снимки (для диалога управления)."""
-        return list(self._index["snapshots"])
+        return [self._public(e) for e in self._index["snapshots"]]
 
     def save_snapshot(self, doc_com, doc_name: str, create_new: bool = False) -> str:
         """Сохранить снимок документа Word.
@@ -123,21 +149,22 @@ class TrackingManager:
             except Exception as exc:
                 raise RuntimeError(f"Не удалось сохранить снимок: {exc}") from exc
 
-        display_name = os.path.splitext(os.path.basename(dest_path))[0]
+        filename = os.path.basename(dest_path)
+        display_name = os.path.splitext(filename)[0]
         entry = {
             "original_doc_name": doc_name,
-            "path": dest_path,
+            "filename": filename,
             "display_name": display_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
 
         if not create_new:
-            # Заменить старую основную запись
+            # Заменить старую основную запись (по тому же файлу)
             self._index["snapshots"] = [
                 e for e in self._index["snapshots"]
                 if not (
                     e["original_doc_name"] == doc_name
-                    and e["path"] == dest_path
+                    and self._resolve_path(e) == dest_path
                 )
             ]
 
@@ -153,6 +180,7 @@ class TrackingManager:
         except OSError:
             pass
         self._index["snapshots"] = [
-            e for e in self._index["snapshots"] if e["path"] != path
+            e for e in self._index["snapshots"]
+            if self._resolve_path(e) != path
         ]
         self._save_index()

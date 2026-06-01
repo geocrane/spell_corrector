@@ -109,6 +109,10 @@ model/
 adapters/
 instructions/
 
+# Пользовательские данные и резервные копии (создаются у пользователя, не в репо)
+userdata/
+backups/
+
 *.log
 *.zip
 *.rar

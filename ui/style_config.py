@@ -6,10 +6,12 @@ import json
 import logging
 import os
 
+from core import paths
+
 logger = logging.getLogger("ui.style_config")
 
-_THIS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_STYLE_CONFIG_PATH = os.path.join(_THIS_DIR, "ui_style.json")
+# Стиль хранится в userdata/ (вне кода) — переживает обновления приложения.
+_STYLE_CONFIG_PATH = paths.STYLE_PATH
 
 _DEFAULT_STYLE = {
     "colors": {
@@ -41,29 +43,39 @@ _DEFAULT_STYLE = {
     },
     "fonts": {
         "ribbon_font_family": "Segoe UI",
-        "ribbon_font_size_lg": 9,
-        "ribbon_font_size_sm": 8
+        "ribbon_font_size_lg": 10,
+        "ribbon_font_size_md": 9,
+        "ribbon_font_size_sm": 7
     },
     "ribbon": {
         "compact": {
-            "outer_padx": 4,
-            "outer_pady": 3,
+            "outer_padx": 3,
+            "outer_pady": 2,
+            "gap": 1,
+            "min_height": 40,
+            "fixed_width": 56,
+            "fixed_height": 44,
+            "icon_box": 18
+        },
+        "medium": {
+            "outer_padx": 5,
+            "outer_pady": 4,
             "gap": 2,
-            "min_height": 50,
-            "fixed_width": 70,
-            "fixed_height": 54,
-            "icon_box": 22
+            "min_height": 62,
+            "fixed_width": 80,
+            "fixed_height": 66,
+            "icon_box": 26
         },
         "normal": {
-            "outer_padx": 8,
-            "outer_pady": 4,
-            "gap": 3,
-            "min_height": 100,
-            "fixed_width": 92,
-            "fixed_height": 96,
-            "icon_box": 56
+            "outer_padx": 10,
+            "outer_pady": 6,
+            "gap": 10,
+            "min_height": 110,
+            "fixed_width": 120,
+            "fixed_height": 108,
+            "icon_box": 64
         },
-        "border_radius": 0
+        "border_radius": 4
     },
     "tile": {
         "border_radius": 6,

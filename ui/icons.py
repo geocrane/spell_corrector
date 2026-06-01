@@ -38,6 +38,7 @@ ICONS: dict[str, str] = {
     "auditor": "auditor.png",
     "skip_tables": "skip_tables.png",
     "hide_clean": "hide_clean.png",
+    "update": "update.png",
     "errors_mode": "errors_mode.png",
     "revisions": "revisions.png",
     "compare": "compare.png",
@@ -58,6 +59,7 @@ ICON_FALLBACK_TEXT: dict[str, str] = {
     "format_style": "B",
     "auditor": "A",
     "skip_tables": "▦",  # ▦
+    "update": "⬆",  # ⬆ (PNG необязателен — показывается этот глиф)
     "hide_clean": "\U0001f441",  # 👁
     "errors_mode": "⚠",  # ⚠
     "revisions": "W",

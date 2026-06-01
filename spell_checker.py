@@ -15,6 +15,8 @@ import re
 import sys
 import threading
 
+from core import paths
+
 # ВАЖНО: torch, transformers, peft импортируются лениво в load_model()
 # чтобы не замедлять запуск приложения.
 
@@ -22,7 +24,8 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_THIS_DIR, "model", "sage-fredt5-distilled-95m")
 ADAPTERS_DIR = os.path.join(_THIS_DIR, "adapters")
 
-_LOG_FILE = os.path.join(_THIS_DIR, "spell_debug.log")
+# Лог хранится в userdata/logs (вне кода) — не конфликтует с обновлением.
+_LOG_FILE = os.path.join(paths.LOG_DIR, "spell_debug.log")
 logger = logging.getLogger("spell_checker")
 logger.setLevel(logging.DEBUG)
 _fh = logging.FileHandler(_LOG_FILE, encoding="utf-8", mode="a")

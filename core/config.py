@@ -7,12 +7,13 @@
 
 import json
 import logging
-import os
+
+from core import paths
 
 logger = logging.getLogger("core.config")
 
-_THIS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CONFIG_PATH = os.path.join(_THIS_DIR, "config.json")
+# Конфиг хранится в userdata/ (вне кода) — переживает обновления приложения.
+_CONFIG_PATH = paths.CONFIG_PATH
 
 _DEFAULT_CONFIG = {
     "default_adapter": "lora_adapter_v2.1",

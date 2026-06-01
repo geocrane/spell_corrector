@@ -9,10 +9,12 @@ import os
 import sys
 import threading as _threading
 
+from core import paths
+
 # ─── Логирование ────────────────────────────────────────────────────────
 
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_LOG_FILE = os.path.join(_THIS_DIR, "spell_debug.log")
+# Лог хранится в userdata/logs (вне кода) — не конфликтует с обновлением.
+_LOG_FILE = os.path.join(paths.LOG_DIR, "spell_debug.log")
 logger = logging.getLogger("main_app")
 logger.setLevel(logging.DEBUG)
 _fh = logging.FileHandler(_LOG_FILE, encoding="utf-8", mode="a")
@@ -44,6 +46,12 @@ _threading.excepthook = _thread_except_hook
 
 
 # ─── Точка входа ────────────────────────────────────────────────────────
+
+# Создать userdata и перенести настройки/стиль/снимки из старых мест (идемпотентно).
+# КРИТИЧНО выполнить ДО импорта ui.main_window: при его импорте создаётся
+# singleton стиля (ui.style_config), который читает userdata/ui_style.json.
+# Миграция должна успеть перенести файл туда до этого чтения.
+paths.ensure_userdata()
 
 from core.engine import Engine
 from ui.main_window import MainWindow

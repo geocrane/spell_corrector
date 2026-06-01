@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import office_finder
+from core import paths
 from core.providers import get_all_providers
 from core.tracking import TrackingManager
 from ui import icons
@@ -152,7 +153,7 @@ class MainWindow(tk.Tk):
         super().__init__()
 
         self.engine = engine
-        self.title("Корректор орфографии")
+        self.title(f"Корректор орфографии — v{paths.get_version()}")
         self.geometry(f"{APP_WIDTH}x500")
         self.resizable(True, True)
 
@@ -587,7 +588,7 @@ class MainWindow(tk.Tk):
         self.track_button = RibbonButton(
             self.primary_row,
             icon_key="track",
-            text="Отслеживать",
+            text="Отслежив.",
             command=self._track_active_document,
             icon_size=icons.ICON_MD,
             orient="vertical",
@@ -609,6 +610,16 @@ class MainWindow(tk.Tk):
             icon_key="snapshots",
             text="Снимки",
             command=self._open_snapshots_manager,
+            icon_size=icons.ICON_MD,
+            orient="vertical",
+            size="medium",
+        )
+
+        self.update_button = RibbonButton(
+            self.primary_row,
+            icon_key="update",
+            text="Обновить",
+            command=self._open_update_dialog,
             icon_size=icons.ICON_MD,
             orient="vertical",
             size="medium",
@@ -643,6 +654,7 @@ class MainWindow(tk.Tk):
             self.track_button,
             self.compare_open_button,
             self.snapshots_button,
+            self.update_button,
             self.highlight_toggle,
         ]
 
@@ -750,6 +762,7 @@ class MainWindow(tk.Tk):
             self.track_button,
             self.compare_open_button,
             self.snapshots_button,
+            self.update_button,
             self.highlight_toggle,
         ):
             try:
@@ -768,6 +781,7 @@ class MainWindow(tk.Tk):
                 self.track_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
                 self.compare_open_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
                 self.snapshots_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
+                self.update_button.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 2))
             else:
                 # Обычный режим
                 self.tracking_mode_toggle.set_state("off")
@@ -1167,6 +1181,99 @@ class MainWindow(tk.Tk):
         """Открыть диалог управления всеми снимками."""
         from ui.snapshot_manager_dialog import SnapshotManagerDialog
         SnapshotManagerDialog(self, self._tracking_manager)
+
+    # ─── Обновление приложения ──────────────────────────────────────────
+
+    def _open_update_dialog(self):
+        """Обновить приложение из выбранного пользователем zip-архива.
+
+        Этапы: выбор архива → валидация → проверка версии → подтверждение →
+        резервная копия → применение. Бэкап и применение идут в фоновом потоке,
+        прогресс по реальным этапам показывается в overlay.
+        """
+        from tkinter import filedialog, messagebox
+        from core import updater
+
+        archive = filedialog.askopenfilename(
+            title="Выберите архив обновления",
+            filetypes=[("ZIP-архив", "*.zip"), ("Все файлы", "*.*")],
+            parent=self,
+        )
+        if not archive:
+            return
+
+        ok, new_ver, errors = updater.validate_archive(archive)
+        if not ok:
+            messagebox.showerror(
+                "Некорректный архив",
+                "Это не подходящий архив обновления:\n\n• " + "\n• ".join(errors),
+                parent=self,
+            )
+            return
+
+        current = paths.get_version()
+        if not paths.is_newer(new_ver, current):
+            messagebox.showwarning(
+                "Обновление не требуется",
+                f"Версия в архиве ({new_ver}) не новее текущей ({current}).\n"
+                "Обновление отменено.",
+                parent=self,
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Подтверждение обновления",
+            f"Текущая версия: {current}\nНовая версия: {new_ver}\n\n"
+            "Будет создана резервная копия текущей версии, затем применено "
+            "обновление.\nПродолжить?",
+            parent=self,
+        ):
+            return
+
+        self._toolbar_set_busy(True)
+        self.overlay.show("Подготовка обновления…", cancelable=False, show_spinner=True)
+        self.update()
+
+        def _progress(msg: str):
+            self.after(0, lambda m=msg: self.overlay.update_message(m))
+
+        def _worker():
+            try:
+                _progress("Этап 1/2. Создание резервной копии…")
+                backup_path = updater.create_backup(progress_cb=_progress)
+                _progress("Этап 2/2. Установка обновления…")
+                updater.apply_update(archive, progress_cb=_progress)
+                self.after(
+                    0, lambda: self._finish_update(True, new_ver, backup_path, None)
+                )
+            except Exception as exc:  # noqa: BLE001 — показываем пользователю
+                logger.exception("Update failed")
+                self.after(0, lambda e=exc: self._finish_update(False, new_ver, None, e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _finish_update(self, ok: bool, new_ver, backup_path, error):
+        """Завершить обновление: скрыть overlay и показать итог."""
+        from tkinter import messagebox
+
+        self.overlay.hide()
+        self._toolbar_set_busy(False)
+        if ok:
+            messagebox.showinfo(
+                "Обновление установлено",
+                f"Приложение обновлено до версии {new_ver}.\n"
+                f"Резервная копия: {os.path.basename(backup_path)}\n\n"
+                "Перезапустите приложение, чтобы изменения вступили в силу.",
+                parent=self,
+            )
+        else:
+            messagebox.showerror(
+                "Ошибка обновления",
+                f"Не удалось применить обновление:\n{error}\n\n"
+                "Файлы кода могли быть заменены частично. При проблемах "
+                "восстановите прошлую версию из папки backups/.",
+                parent=self,
+            )
 
     def _run_comparison(self, doc: dict, snapshot_path: str):
         """Запустить сравнение текущего документа со снимком."""
