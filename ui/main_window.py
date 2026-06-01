@@ -461,7 +461,8 @@ class MainWindow(tk.Tk):
         self.combo_row = ttk.Frame(self.toolbar)
 
         self.format_unify_frame = ttk.Frame(self.combo_row)
-        self.format_unify_frame.pack(side=tk.LEFT)
+        # Упаковка format_unify_frame/options_group_sep/doc_options_frame — в
+        # _update_button_state (documents), чтобы порядок блоков был детерминирован.
 
         # «Применить всё» — главная кнопка группы (слева, с отступом-сепаратором)
         self.format_all_btn = RibbonToggle(
@@ -498,7 +499,10 @@ class MainWindow(tk.Tk):
             tg.pack(side=tk.LEFT, padx=1)
             self.format_buttons[attr] = tg
 
-        # Правая группа: Аудитор + Пропуск таблиц
+        # Разделитель между блоком стиля/шрифтов и блоком аудитор/таблицы
+        self.options_group_sep = ttk.Separator(self.combo_row, orient="vertical")
+
+        # Группа опций документа: Аудитор + Без таблиц + Обновить
         self.doc_options_frame = ttk.Frame(self.combo_row)
 
         self.auditor_format_var = tk.BooleanVar(
@@ -528,6 +532,23 @@ class MainWindow(tk.Tk):
             initial_state="on" if self.skip_tables_var.get() else "off",
         )
         self.skip_tables_toggle.pack(side=tk.LEFT, padx=1)
+
+        # Разделитель перед блоком обновления
+        self.update_group_sep = ttk.Separator(
+            self.doc_options_frame, orient="vertical"
+        )
+        self.update_group_sep.pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # «Обновить» — компактная кнопка справа от «Без таблиц»
+        self.update_button = RibbonButton(
+            self.doc_options_frame,
+            icon_key="update",
+            text="Обновить",
+            command=self._open_update_dialog,
+            icon_size=icons.ICON_SM,
+            compact=True,
+        )
+        self.update_button.pack(side=tk.LEFT, padx=1)
 
         # Скрытая переменная strict_protection — поведение сохранено.
         self.strict_protect_var = tk.BooleanVar(
@@ -610,16 +631,6 @@ class MainWindow(tk.Tk):
             icon_key="snapshots",
             text="Снимки",
             command=self._open_snapshots_manager,
-            icon_size=icons.ICON_MD,
-            orient="vertical",
-            size="medium",
-        )
-
-        self.update_button = RibbonButton(
-            self.primary_row,
-            icon_key="update",
-            text="Обновить",
-            command=self._open_update_dialog,
             icon_size=icons.ICON_MD,
             orient="vertical",
             size="medium",
@@ -762,7 +773,6 @@ class MainWindow(tk.Tk):
             self.track_button,
             self.compare_open_button,
             self.snapshots_button,
-            self.update_button,
             self.highlight_toggle,
         ):
             try:
@@ -781,7 +791,6 @@ class MainWindow(tk.Tk):
                 self.track_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
                 self.compare_open_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
                 self.snapshots_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
-                self.update_button.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 2))
             else:
                 # Обычный режим
                 self.tracking_mode_toggle.set_state("off")
@@ -795,8 +804,11 @@ class MainWindow(tk.Tk):
                 )
                 self.toolbar_separator.pack(fill=tk.X, pady=4)
                 self.combo_row.pack(fill=tk.X, pady=(4, 0))
+                # Единая левая цепочка с разделителями между блоками:
+                # [Всё | Шрифт Размер Стиль] ‖ [Аудитор Без таблиц] ‖ [Обновить]
                 self.format_unify_frame.pack(side=tk.LEFT)
-                self.doc_options_frame.pack(side=tk.RIGHT)
+                self.options_group_sep.pack(side=tk.LEFT, fill=tk.Y, padx=4)
+                self.doc_options_frame.pack(side=tk.LEFT)
                 self._refresh_check_buttons()
                 self._refresh_doc_dependent_options()
                 self._refresh_format_unify_panel()
