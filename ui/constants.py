@@ -61,6 +61,7 @@ RIBBON_DISABLED_FG = style.get("colors", "ribbon_disabled_fg")
 # Шрифты
 RIBBON_FONT_FAMILY = style.get("fonts", "ribbon_font_family")
 RIBBON_FONT_LG = (RIBBON_FONT_FAMILY, style.get("fonts", "ribbon_font_size_lg"))
+RIBBON_FONT_MD = (RIBBON_FONT_FAMILY, style.get("fonts", "ribbon_font_size_md"))
 RIBBON_FONT_SM = (RIBBON_FONT_FAMILY, style.get("fonts", "ribbon_font_size_sm"))
 
 # Пути

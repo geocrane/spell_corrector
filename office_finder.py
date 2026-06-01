@@ -184,3 +184,27 @@ def restore_format(doc, descriptor):
     if provider:
         return provider.restore_format(doc, descriptor)
     return False
+
+
+def highlight_text_fragment(doc, search_start: int, search_end: int,
+                            text: str):
+    """Найти текст в диапазоне и применить жёлтую заливку.
+
+    Returns: (start, end) найденного диапазона, или None.
+    """
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        return provider.highlight_text_fragment(doc, search_start, search_end, text)
+    return None
+
+
+def highlight_range(doc, start: int, end: int, on: bool) -> bool:
+    """Применить (on=True, жёлтый) или снять (on=False) заливку-выделение.
+
+    Использует Word HighlightColorIndex: 7 = wdYellow, -1 = wdNoHighlight.
+    """
+    provider = get_provider(doc.get("type", ""))
+    if provider:
+        color_index = 7 if on else 0  # wdYellow=7, wdNoHighlight=0
+        return provider.highlight_range(doc, start, end, color_index)
+    return False

@@ -40,6 +40,7 @@ from ui.constants import (
     RIBBON_TOGGLE_MIXED_FG,
     RIBBON_DISABLED_FG,
     RIBBON_FONT_LG,
+    RIBBON_FONT_MD,
     RIBBON_FONT_SM,
     RIBBON_FONT_FAMILY,
 )
@@ -115,6 +116,7 @@ class _RibbonBase(tk.Canvas):
         icon_size: int = icons.ICON_LG,
         orient: str = "vertical",
         compact: bool = False,
+        size: Optional[str] = None,
     ):
         self._parent_bg = _resolve_parent_bg(parent)
         super().__init__(
@@ -130,8 +132,9 @@ class _RibbonBase(tk.Canvas):
         self._orient = orient
         self._compact = compact
 
-        # Размеры/отступы — из конфига
-        config_key = "compact" if compact else "normal"
+        # Размеры/отступы — из конфига. size явно задаёт профиль (medium и т.п.),
+        # иначе compact→"compact", по умолчанию "normal".
+        config_key = size or ("compact" if compact else "normal")
         self._outer_padx = style.get("ribbon", config_key, "outer_padx")
         self._outer_pady = style.get("ribbon", config_key, "outer_pady")
         self._gap = style.get("ribbon", config_key, "gap")
@@ -146,9 +149,12 @@ class _RibbonBase(tk.Canvas):
             "ribbon", config_key, "icon_box", default=icon_size,
         )
 
-        if compact:
+        if config_key == "compact":
             self._font = RIBBON_FONT_SM
             self._fallback_font = (RIBBON_FONT_FAMILY, max(icon_size - 2, 10))
+        elif config_key == "medium":
+            self._font = RIBBON_FONT_MD
+            self._fallback_font = (RIBBON_FONT_FAMILY, max(icon_size - 3, 11))
         else:
             self._font = RIBBON_FONT_LG
             self._fallback_font = (RIBBON_FONT_FAMILY, max(icon_size - 4, 12), "bold")
@@ -388,6 +394,7 @@ class RibbonButton(_RibbonBase):
         orient: str = "vertical",
         style: str = "default",
         compact: bool = False,
+        size: Optional[str] = None,
     ):
         # Поддерживаем старые названия стилей, чтобы не ломать main_window.py
         if style in ("primary", "neutral"):
@@ -404,6 +411,7 @@ class RibbonButton(_RibbonBase):
             icon_size=icon_size,
             orient=orient,
             compact=compact,
+            size=size,
         )
 
     def _interactive(self) -> bool:
@@ -472,6 +480,7 @@ class RibbonToggle(_RibbonBase):
         orient: str = "vertical",
         initial_state: str = "off",
         compact: bool = True,
+        size: Optional[str] = None,
     ):
         if initial_state not in self.VALID_STATES:
             initial_state = "off"
@@ -484,6 +493,7 @@ class RibbonToggle(_RibbonBase):
             icon_size=icon_size,
             orient=orient,
             compact=compact,
+            size=size,
         )
 
     def _interactive(self) -> bool:

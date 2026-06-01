@@ -512,8 +512,8 @@ def create_comparison_tile(parent, diff_item: dict, on_click):
 
     Типы (diff_item["tag"]):
       replace — diff A→B с красным/зелёным подсветом (через create_diff_widget)
-      insert  — только зелёный: абзац есть в B, нет в A
-      delete  — только красный: абзац есть в A, нет в B
+      insert  — только зелёный: абзац добавлен в текущем документе
+      delete  — только красный: абзац удалён (был в снимке, нет в текущем)
     """
     tile = RibbonTile(parent)
     tile.pack(fill=tk.X, pady=3, padx=2)
@@ -525,11 +525,11 @@ def create_comparison_tile(parent, diff_item: dict, on_click):
     header_frame.pack(side=tk.TOP, fill=tk.X)
 
     badge_cfg = {
-        "replace": ("~", "#fd7e14"),
-        "insert":  ("+", "#28a745"),
-        "delete":  ("−", "#dc3545"),
+        "replace": ("~", "#fd7e14", "Изменён абзац"),
+        "insert":  ("+", "#28a745", "Добавлен абзац"),
+        "delete":  ("−", "#dc3545", "Удалён абзац"),
     }
-    badge_text, badge_color = badge_cfg.get(tag, ("?", "#6c757d"))
+    badge_text, badge_color, header_text = badge_cfg.get(tag, ("?", "#6c757d", ""))
 
     badge = tk.Label(
         header_frame, text=badge_text, font=("Arial", 10, "bold"),
@@ -537,6 +537,14 @@ def create_comparison_tile(parent, diff_item: dict, on_click):
     )
     badge._keep_bg = True
     badge.pack(side=tk.LEFT)
+
+    hdr_lbl = tk.Label(
+        header_frame, text=header_text,
+        font=("Segoe UI", 8, "bold"),
+        fg=badge_color, bg=RIBBON_BG,
+    )
+    hdr_lbl._keep_bg = True
+    hdr_lbl.pack(side=tk.LEFT, padx=(4, 0))
 
     if tag == "replace":
         diff_w = create_diff_widget(body, diff_item["text_a"], diff_item["text_b"])
@@ -549,7 +557,7 @@ def create_comparison_tile(parent, diff_item: dict, on_click):
         lbl._keep_bg = True
         lbl.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
         lbl.bind("<Configure>", lambda e, l=lbl: l.config(wraplength=max(1, e.width)))
-    else:  # delete
+    else:  # delete — показываем полный текст удалённого абзаца
         lbl = tk.Label(
             body, text=diff_item["text_a"], bg=DIFF_REMOVED_BG, fg=DIFF_REMOVED_FG,
             anchor="w", justify="left", wraplength=1,
@@ -558,6 +566,15 @@ def create_comparison_tile(parent, diff_item: dict, on_click):
         lbl._keep_bg = True
         lbl.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
         lbl.bind("<Configure>", lambda e, l=lbl: l.config(wraplength=max(1, e.width)))
+
+        hint = tk.Label(
+            body,
+            text="↕ Клик — перейти к месту удаления в документе",
+            font=("Segoe UI", 7), fg="#888", bg=RIBBON_BG,
+            anchor="w",
+        )
+        hint._keep_bg = True
+        hint.pack(side=tk.TOP, fill=tk.X, pady=(1, 0))
 
     tile.bind_click(lambda i=diff_item: on_click(i))
 

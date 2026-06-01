@@ -156,6 +156,24 @@ class DocumentProvider(ABC):
         """
         return False
 
+    def highlight_range(self, doc: dict, start: int, end: int, color_index: int) -> bool:
+        """Применить/снять заливку-выделение на диапазоне.
+
+        По умолчанию не поддерживается (реализовано только для Word).
+        """
+        return False
+
+    def highlight_text_fragment(
+        self, doc: dict,
+        search_start: int, search_end: int,
+        text: str,
+    ) -> tuple[int, int] | None:
+        """Найти текст в диапазоне и применить заливку.
+
+        По умолчанию не поддерживается. Возвращает None.
+        """
+        return None
+
     def set_revisions_mode(self, doc: dict, on: bool) -> bool:
         """Включить/выключить режим Track Changes в документе.
 

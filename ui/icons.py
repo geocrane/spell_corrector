@@ -41,6 +41,9 @@ ICONS: dict[str, str] = {
     "errors_mode": "errors_mode.png",
     "revisions": "revisions.png",
     "compare": "compare.png",
+    "track": "track.png",
+    "highlight": "highlight.png",
+    "snapshots": "snapshots.png",
 }
 
 # Текстовые fallback'и (используются, если Pillow нет или PNG отсутствует)
@@ -59,6 +62,9 @@ ICON_FALLBACK_TEXT: dict[str, str] = {
     "errors_mode": "⚠",  # ⚠
     "revisions": "W",
     "compare": "≠",
+    "track": "📌",
+    "highlight": "▌",
+    "snapshots": "🗂",
 }
 
 _CACHE: dict[tuple[str, int, str], "tk.PhotoImage"] = {}

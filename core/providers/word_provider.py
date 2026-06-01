@@ -913,6 +913,11 @@ class WordProvider(DocumentProvider):
         try:
             rng = doc_com.Range(start, end)
             rng.Select()
+            # Передать фокус окну Word, чтобы выделение было видно
+            hwnd = doc.get("hwnd")
+            if hwnd:
+                win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
+                win32gui.SetForegroundWindow(hwnd)
             return True
         except Exception as e:
             logger.error("navigate_to_range error (%s, %s): %s", start, end, e)
@@ -968,6 +973,54 @@ class WordProvider(DocumentProvider):
             logger.error("set_revisions_mode: ни одно API отображения не сработало")
             return False
         return True
+
+    def highlight_range(self, doc: dict, start: int, end: int, color_index: int) -> bool:
+        """Применить/снять заливку-выделение на диапазоне.
+
+        color_index: 7 = wdYellow, -1 = wdNoHighlight.
+        """
+        doc_com = self.get_doc_com(doc)
+        if doc_com is None:
+            return False
+        try:
+            rng = doc_com.Range(start, end)
+            rng.HighlightColorIndex = color_index
+            return True
+        except Exception as e:
+            logger.error("highlight_range error (%s, %s): %s", start, end, e)
+            return False
+
+    def highlight_text_fragment(
+        self, doc: dict,
+        search_start: int, search_end: int,
+        text: str,
+    ) -> tuple[int, int] | None:
+        """Найти текст в диапазоне и применить жёлтую заливку.
+
+        Использует Word Find — не зависит от позиционного смещения строки.
+
+        Returns: (start, end) найденного диапазона, или None если не найдено.
+        """
+        doc_com = self.get_doc_com(doc)
+        if not doc_com or not text or not text.strip():
+            return None
+        try:
+            rng = doc_com.Range(search_start, search_end)
+            find = rng.Find
+            find.ClearFormatting()
+            find.Text = text
+            find.Forward = True
+            find.Wrap = 0          # wdFindStop
+            find.MatchCase = True
+            find.MatchWholeWord = False
+            if find.Execute():
+                rng.HighlightColorIndex = 7  # wdYellow
+                return (rng.Start, rng.End)
+            return None
+        except Exception as e:
+            logger.error("highlight_text_fragment error (%s..%s, %r): %s",
+                         search_start, search_end, text[:40], e)
+            return None
 
     def get_icon(self) -> tuple[str, str]:
         return ("W", "#2B579A")

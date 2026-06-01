@@ -29,6 +29,7 @@
   "fonts": {
     "ribbon_font_family": "Segoe UI",
     "ribbon_font_size_lg": 10,
+    "ribbon_font_size_md": 9,
     "ribbon_font_size_sm": 7
   },
   "ribbon": {
@@ -40,6 +41,15 @@
       "fixed_width": 56,
       "fixed_height": 44,
       "icon_box": 18
+    },
+    "medium": {
+      "outer_padx": 5,
+      "outer_pady": 4,
+      "gap": 2,
+      "min_height": 62,
+      "fixed_width": 80,
+      "fixed_height": 66,
+      "icon_box": 26
     },
     "normal": {
       "outer_padx": 10,
