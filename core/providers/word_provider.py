@@ -485,6 +485,41 @@ class WordProvider(DocumentProvider):
         except Exception:
             pass
 
+    def activate_two(
+        self,
+        doc_a: dict,
+        doc_b: dict,
+        monitor: dict,
+        app_width: int,
+        layout: str = "vertical",
+    ) -> None:
+        """Разместить два Word-окна слева от панели приложения.
+
+        layout="vertical"   — стопкой (doc_a сверху, doc_b снизу)
+        layout="horizontal" — рядом (doc_a слева, doc_b правее)
+        """
+        try:
+            left_total = monitor["width"] - app_width
+            x0, y0 = monitor["x"], monitor["y"]
+            if layout == "horizontal":
+                half_w = left_total // 2
+                positions = [
+                    (doc_a["hwnd"], x0,           y0, half_w, monitor["height"]),
+                    (doc_b["hwnd"], x0 + half_w,  y0, half_w, monitor["height"]),
+                ]
+            else:  # vertical
+                half_h = monitor["height"] // 2
+                positions = [
+                    (doc_a["hwnd"], x0, y0,          left_total, half_h),
+                    (doc_b["hwnd"], x0, y0 + half_h, left_total, half_h),
+                ]
+            for hwnd, x, y, w, h in positions:
+                win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
+                win32gui.MoveWindow(hwnd, x, y, w, h, True)
+            win32gui.SetForegroundWindow(doc_a["hwnd"])
+        except Exception:
+            pass
+
     def extract_sentences(
         self,
         doc: dict,

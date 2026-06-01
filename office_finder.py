@@ -103,6 +103,13 @@ def reject_sentence_revisions(doc, sentence, marker, original_text, all_sentence
             "delta": 0, "old_end": 0, "rng_start": 0}
 
 
+def activate_two_documents(doc_a, doc_b, monitor, app_width, layout="vertical"):
+    """Разместить два Word-окна слева от панели приложения."""
+    provider = get_provider("word")
+    if provider:
+        provider.activate_two(doc_a, doc_b, monitor, app_width, layout)
+
+
 def navigate_to_range(doc, start, end):
     """Выделить произвольный диапазон в документе."""
     provider = get_provider(doc.get("type", ""))

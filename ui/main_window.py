@@ -97,6 +97,13 @@ class MainWindow(tk.Tk):
         self.errors_tiles = []  # [(correction, tile_frame), ...] для режима ошибок
         self.revisions_mode_var = tk.BooleanVar(value=False)
 
+        # Режим сравнения документов
+        self._compare_mode = False
+        self._compare_selected: list = []   # 0, 1 или 2 выбранных doc-dict
+        self._compare_items: list = []      # результат compute_diff
+        self._compare_docs: list = []       # [doc_a, doc_b] для навигации
+        self._compare_layout = "vertical"   # "vertical" | "horizontal"
+
         # Универсальный overlay-индикатор долгих операций (создаётся в _create_ui).
         self.overlay: BusyOverlay | None = None
         self._all_toolbar_buttons = []
@@ -326,8 +333,9 @@ class MainWindow(tk.Tk):
             icon_key="find",
             text="Документы",
             command=self.find_documents,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
+            compact=True,
             style="default",
         )
 
@@ -350,8 +358,9 @@ class MainWindow(tk.Tk):
             icon_key="check_all",
             text="Проверить все",
             command=self.check_selected_document,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
+            compact=True,
             style="default",
         )
 
@@ -360,8 +369,9 @@ class MainWindow(tk.Tk):
             icon_key="check_selection",
             text="Пров. фрагмент",
             command=self.check_selected_fragment,
-            icon_size=icons.ICON_LG,
+            icon_size=icons.ICON_SM,
             orient="vertical",
+            compact=True,
             style="default",
         )
 
@@ -483,6 +493,42 @@ class MainWindow(tk.Tk):
             initial_state="on" if self.revisions_mode_var.get() else "off",
         )
 
+        # Кнопки режима сравнения
+        self.compare_button = RibbonButton(
+            self.primary_row,
+            icon_key="compare",
+            text="Сравнение",
+            command=self._toggle_compare_mode,
+            icon_size=icons.ICON_LG,
+            orient="vertical",
+            style="default",
+        )
+
+        self.compare_start_button = RibbonButton(
+            self.primary_row,
+            icon_key="compare",
+            text="Сравнить",
+            command=self._run_comparison,
+            icon_size=icons.ICON_SM,
+            orient="vertical",
+            compact=True,
+            style="default",
+        )
+
+        # Строка опций в режиме сравнения (вместо combo_row с форматированием)
+        self.compare_options_row = ttk.Frame(self.toolbar)
+
+        self.compare_layout_toggle = RibbonToggle(
+            self.compare_options_row,
+            icon_key="compare",
+            text="↕ Стопкой",
+            command=self._toggle_compare_layout,
+            icon_size=icons.ICON_SM,
+            compact=True,
+            initial_state="on",
+        )
+        self.compare_layout_toggle.pack(side=tk.LEFT, padx=(0, 4))
+
         # Перечень всех кнопок toolbar — для массовой блокировки/разблокировки
         # во время долгих операций (например, унификация форматирования).
         self._all_toolbar_buttons = [
@@ -497,6 +543,9 @@ class MainWindow(tk.Tk):
             self.hide_clean_toggle,
             self.errors_mode_button,
             self.revisions_toggle,
+            self.compare_button,
+            self.compare_start_button,
+            self.compare_layout_toggle,
         ]
 
         # Фрейм выбора адаптера
@@ -572,9 +621,12 @@ class MainWindow(tk.Tk):
             self.check_selection_button,
             self.toolbar_separator,
             self.combo_row,
+            self.compare_options_row,
             self.hide_clean_toggle,
             self.errors_mode_button,
             self.revisions_toggle,
+            self.compare_button,
+            self.compare_start_button,
         ):
             try:
                 w.pack_forget()
@@ -582,20 +634,36 @@ class MainWindow(tk.Tk):
                 pass
 
         if self.current_view == "documents":
-            self.find_button.set_enabled(True)
-            # primary_row: [Найти] | [Весь текст] [Фрагмент]
-            self.find_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 44))
-            self.primary_sep.pack(in_=self.primary_row, side=tk.LEFT, fill=tk.Y, padx=6)
-            self.check_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
-            self.check_selection_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
-            self.toolbar_separator.pack(fill=tk.X, pady=4)
-            self.combo_row.pack(fill=tk.X, pady=(4, 0))
-            self.format_unify_frame.pack(side=tk.LEFT)
-            self.doc_options_frame.pack(side=tk.RIGHT)
-            self._refresh_check_buttons()
-            self._refresh_doc_dependent_options()
-            self._refresh_format_unify_panel()
-            self._refresh_doc_options_toggles()
+            if self._compare_mode:
+                # Режим выбора документов: только кнопки сравнения + переключатель раскладки
+                self.compare_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
+                self.compare_start_button.set_enabled(len(self._compare_selected) == 2)
+                self.compare_start_button.pack(
+                    in_=self.primary_row, side=tk.LEFT, padx=(0, 4)
+                )
+                self.toolbar_separator.pack(fill=tk.X, pady=4)
+                self.compare_options_row.pack(fill=tk.X, pady=(4, 0))
+            else:
+                # Обычный режим
+                self.find_button.set_enabled(True)
+                # primary_row: [Документы] | [Проверить все] [Пров. фрагмент] [Сравнение]
+                self.find_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
+                self.primary_sep.pack(in_=self.primary_row, side=tk.LEFT, fill=tk.Y, padx=6)
+                self.check_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
+                self.check_selection_button.pack(in_=self.primary_row, side=tk.LEFT, padx=3)
+                self.compare_button.pack(in_=self.primary_row, side=tk.RIGHT, padx=(0, 4))
+                self.toolbar_separator.pack(fill=tk.X, pady=4)
+                self.combo_row.pack(fill=tk.X, pady=(4, 0))
+                self.format_unify_frame.pack(side=tk.LEFT)
+                self.doc_options_frame.pack(side=tk.RIGHT)
+                self._refresh_check_buttons()
+                self._refresh_doc_dependent_options()
+                self._refresh_format_unify_panel()
+                self._refresh_doc_options_toggles()
+        elif self.current_view == "comparison":
+            self.back_button.set_command(self._exit_comparison_view)
+            self.back_button.set_enabled(True)
+            self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
         elif self.current_view == "errors":
             self.back_button.set_command(self._exit_errors_view)
             self.back_button.set_enabled(True)
@@ -903,6 +971,137 @@ class MainWindow(tk.Tk):
 
         self._update_status_text()
 
+    # ─── Режим сравнения документов ─────────────────────────────────────
+
+    def _toggle_compare_mode(self):
+        """Включить / выключить режим выбора документов для сравнения."""
+        self._compare_mode = not self._compare_mode
+        self._compare_selected.clear()
+        self.compare_button.set_text("Отмена" if self._compare_mode else "Сравнение")
+        if self._compare_mode:
+            self.status_label.config(text="Выберите два Word-документа для сравнения")
+            # Снять выделение с текущей плитки — в compare-режиме нет «активного» документа
+            for tile in self.tile_frames.values():
+                if hasattr(tile, "set_selected") and tile.winfo_exists():
+                    tile.set_selected(False)
+        else:
+            self._highlight_selected_tile_ui()
+            self._update_status_text()
+        self._update_button_state()
+
+    def _on_compare_tile_click(self, doc):
+        """Клик по плитке в режиме выбора документов для сравнения."""
+        if doc.get("type") != "word":
+            self.status_label.config(
+                text="Сравнение доступно только для Word-документов"
+            )
+            return
+        if doc in self._compare_selected:
+            self._compare_selected.remove(doc)
+        elif len(self._compare_selected) < 2:
+            self._compare_selected.append(doc)
+        # Обновить подсветку плиток
+        for doc_id, tile in self.tile_frames.items():
+            selected = any(id(d) == doc_id for d in self._compare_selected)
+            if hasattr(tile, "set_selected") and tile.winfo_exists():
+                tile.set_selected(selected)
+        count = len(self._compare_selected)
+        if count == 2:
+            self.status_label.config(text="Выбрано 2/2. Нажмите «Сравнить»")
+        elif count == 1:
+            self.status_label.config(text="Выбрано 1/2. Выберите ещё один документ")
+        else:
+            self.status_label.config(text="Выберите два Word-документа для сравнения")
+        self._update_button_state()
+
+    def _toggle_compare_layout(self):
+        """Переключить раскладку двух Word-окон (стопкой ↕ / рядом ↔)."""
+        if self._compare_layout == "vertical":
+            self._compare_layout = "horizontal"
+            self.compare_layout_toggle.set_text("↔ Рядом")
+            self.compare_layout_toggle.set_state("off")
+        else:
+            self._compare_layout = "vertical"
+            self.compare_layout_toggle.set_text("↕ Стопкой")
+            self.compare_layout_toggle.set_state("on")
+        # Если уже в режиме просмотра результатов — перепозиционировать окна
+        if self.current_view == "comparison" and len(self._compare_docs) == 2:
+            doc_a, doc_b = self._compare_docs
+            office_finder.activate_two_documents(
+                doc_a, doc_b, self.monitor, APP_WIDTH, self._compare_layout
+            )
+
+    def _run_comparison(self):
+        """Запустить сравнение двух выбранных документов."""
+        from core.comparison import extract_paragraphs, compute_diff
+        if len(self._compare_selected) != 2:
+            return
+        doc_a, doc_b = self._compare_selected
+        try:
+            paras_a = extract_paragraphs(doc_a["com_object"])
+            paras_b = extract_paragraphs(doc_b["com_object"])
+        except Exception as e:
+            self.status_label.config(text=f"Ошибка извлечения текста: {e}")
+            return
+        items = compute_diff(paras_a, paras_b)
+        self._compare_items = items
+        self._compare_docs = [doc_a, doc_b]
+        # Позиционировать два Word-окна согласно выбранной раскладке
+        office_finder.activate_two_documents(
+            doc_a, doc_b, self.monitor, APP_WIDTH, self._compare_layout
+        )
+        # Выйти из режима выбора и перейти к виду сравнения
+        self._compare_mode = False
+        self._compare_selected.clear()
+        self.compare_button.set_text("Сравнение")
+        self._show_comparison_view(items, doc_a, doc_b)
+
+    def _show_comparison_view(self, items, doc_a, doc_b):
+        """Отобразить вид со списком diff-плиток."""
+        from ui.tiles import create_comparison_tile
+        self.current_view = "comparison"
+        self._update_button_state()
+        for widget in self.docs_frame.winfo_children():
+            widget.destroy()
+        self.tile_frames = {}
+        self.canvas.yview_moveto(0)
+        if not items:
+            self.status_label.config(text="Документы идентичны")
+            return
+        self.status_label.config(
+            text=f"{doc_a['name']} vs {doc_b['name']}: {len(items)} отличий"
+        )
+        for item in items:
+            create_comparison_tile(
+                self.docs_frame,
+                item,
+                on_click=lambda i=item: self._on_comparison_tile_click(i),
+            )
+
+    def _on_comparison_tile_click(self, diff_item):
+        """Клик по diff-плитке — навигация в оба Word-окна."""
+        if len(self._compare_docs) != 2:
+            return
+        doc_a, doc_b = self._compare_docs
+        tag = diff_item["tag"]
+        if tag in ("replace", "delete") and diff_item["range_start_a"] is not None:
+            office_finder.navigate_to_range(
+                doc_a, diff_item["range_start_a"], diff_item["range_end_a"]
+            )
+        if tag in ("replace", "insert") and diff_item["range_start_b"] is not None:
+            office_finder.navigate_to_range(
+                doc_b, diff_item["range_start_b"], diff_item["range_end_b"]
+            )
+
+    def _exit_comparison_view(self):
+        """Выйти из режима сравнения и вернуться к списку документов."""
+        self._compare_selected.clear()
+        self._compare_items.clear()
+        self._compare_docs.clear()
+        self._compare_mode = False
+        self.compare_button.set_text("Сравнение")
+        self.show_documents_view()
+
     # ─── Рендер документов ──────────────────────────────────────────────
 
     def _render_documents(self, documents, warnings=None):
@@ -966,6 +1165,10 @@ class MainWindow(tk.Tk):
             self.doc_status_label = status_label
 
     def _on_tile_click(self, doc):
+        if self._compare_mode:
+            self._on_compare_tile_click(doc)
+            return
+
         # Анти-дребезг: блокирующий activate_document() длится 300-800мс. Если
         # пользователь кликает повторно, новые клики игнорируем до завершения.
         if self._tile_click_in_progress:

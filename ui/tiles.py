@@ -503,6 +503,64 @@ def create_word_correction_tile(parent, correction, on_click):
 
     tile.bind_click(lambda c=correction: on_click(c))
 
+
+# ─── Плитка сравнения документов ─────────────────────────────────────────────
+
+
+def create_comparison_tile(parent, diff_item: dict, on_click):
+    """Создать плитку для одного блока изменений в режиме сравнения.
+
+    Типы (diff_item["tag"]):
+      replace — diff A→B с красным/зелёным подсветом (через create_diff_widget)
+      insert  — только зелёный: абзац есть в B, нет в A
+      delete  — только красный: абзац есть в A, нет в B
+    """
+    tile = RibbonTile(parent)
+    tile.pack(fill=tk.X, pady=3, padx=2)
+
+    body = tile.body
+    tag = diff_item["tag"]
+
+    header_frame = tk.Frame(body, bg=RIBBON_BG)
+    header_frame.pack(side=tk.TOP, fill=tk.X)
+
+    badge_cfg = {
+        "replace": ("~", "#fd7e14"),
+        "insert":  ("+", "#28a745"),
+        "delete":  ("−", "#dc3545"),
+    }
+    badge_text, badge_color = badge_cfg.get(tag, ("?", "#6c757d"))
+
+    badge = tk.Label(
+        header_frame, text=badge_text, font=("Arial", 10, "bold"),
+        fg="white", bg=badge_color, width=3, height=1,
+    )
+    badge._keep_bg = True
+    badge.pack(side=tk.LEFT)
+
+    if tag == "replace":
+        diff_w = create_diff_widget(body, diff_item["text_a"], diff_item["text_b"])
+        diff_w._keep_bg = True
+    elif tag == "insert":
+        lbl = tk.Label(
+            body, text=diff_item["text_b"], bg=DIFF_ADDED_BG, fg=DIFF_ADDED_FG,
+            anchor="w", justify="left", wraplength=1,
+        )
+        lbl._keep_bg = True
+        lbl.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        lbl.bind("<Configure>", lambda e, l=lbl: l.config(wraplength=max(1, e.width)))
+    else:  # delete
+        lbl = tk.Label(
+            body, text=diff_item["text_a"], bg=DIFF_REMOVED_BG, fg=DIFF_REMOVED_FG,
+            anchor="w", justify="left", wraplength=1,
+            font=("TkDefaultFont", 10, "overstrike"),
+        )
+        lbl._keep_bg = True
+        lbl.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        lbl.bind("<Configure>", lambda e, l=lbl: l.config(wraplength=max(1, e.width)))
+
+    tile.bind_click(lambda i=diff_item: on_click(i))
+
     return tile
 
 
