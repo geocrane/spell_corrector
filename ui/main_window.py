@@ -788,8 +788,11 @@ class MainWindow(tk.Tk):
                 self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 2))
                 self.find_button.set_enabled(True)
                 self.find_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
+                self.track_button.set_enabled(True)
                 self.track_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
+                self.compare_open_button.set_enabled(True)
                 self.compare_open_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
+                self.snapshots_button.set_enabled(True)
                 self.snapshots_button.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
             else:
                 # Обычный режим
@@ -817,6 +820,10 @@ class MainWindow(tk.Tk):
             self.back_button.set_command(self._exit_comparison_view)
             self.back_button.set_enabled(True)
             self.back_button.pack(in_=self.primary_row, side=tk.LEFT, padx=(0, 4))
+            # Сбрасываем состояние явно: иначе после унификации стиля toggle
+            # остаётся «disabled» (его погасил _toolbar_set_busy, а здесь раньше
+            # был только .pack без set_state).
+            self.highlight_toggle.set_state("on" if self._highlight_on else "off")
             self.highlight_toggle.pack(in_=self.primary_row, side=tk.LEFT, padx=2)
         elif self.current_view == "errors":
             self.back_button.set_command(self._exit_errors_view)
@@ -917,6 +924,10 @@ class MainWindow(tk.Tk):
         self._refresh_format_unify_panel()
         self._refresh_doc_dependent_options()
         self._refresh_doc_options_toggles()
+        # «Обновить» — постоянная кнопка без doc-зависимого состояния; её никто
+        # из _refresh_* и _update_button_state не включает обратно, поэтому
+        # возвращаем enabled явно (иначе остаётся серой после унификации стиля).
+        self.update_button.set_enabled(True)
         self._update_button_state()
 
     def _on_format_toggle(self, attr: str):

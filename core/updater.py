@@ -35,9 +35,41 @@ _EXCLUDE_TOP = {
 # Файлы, без которых архив считается некорректным.
 _REQUIRED = ("version.json", "main.py", "core/engine.py", "ui/main_window.py")
 
+# Файлы, которые ОБЯЗАНЫ присутствовать в APP_ROOT, чтобы считать его настоящим
+# корнем установленного приложения. Если их нет — APP_ROOT определён неверно
+# (запуск из чужой копии / PYTHONPATH / вложенной структуры), и трогать диск
+# нельзя: иначе бэкап выйдет пустым, а файлы применятся «не туда».
+_REQUIRED_LOCAL = ("version.json", "main.py", "core/engine.py", "ui/main_window.py")
+
 
 def _noop(_msg: str):
     pass
+
+
+def verify_app_root() -> list[str]:
+    """Проверить, что paths.APP_ROOT — настоящий корень установки.
+
+    Returns: список отсутствующих обязательных файлов (пустой → всё в порядке).
+    """
+    missing = []
+    for rel in _REQUIRED_LOCAL:
+        if not os.path.isfile(os.path.join(paths.APP_ROOT, *rel.split("/"))):
+            missing.append(rel)
+    return missing
+
+
+def _assert_app_root(stage: str):
+    """Прервать операцию, если APP_ROOT не похож на корень установки."""
+    missing = verify_app_root()
+    logger.info("%s: APP_ROOT=%s (missing=%s)", stage, paths.APP_ROOT, missing)
+    if missing:
+        raise RuntimeError(
+            "Обновление прервано: не удалось определить папку приложения "
+            f"(APP_ROOT={paths.APP_ROOT}).\n"
+            "Отсутствуют ожидаемые файлы: " + ", ".join(missing) + ".\n"
+            "Запустите приложение напрямую из его папки (python main.py) и "
+            "повторите. Диск не изменён."
+        )
 
 
 # ─── Работа со структурой архива ─────────────────────────────────────────
@@ -134,11 +166,20 @@ def create_backup(progress_cb=None) -> str:
     Returns: путь к созданному архиву бэкапа.
     """
     progress_cb = progress_cb or _noop
+    _assert_app_root("create_backup")
     os.makedirs(paths.BACKUPS_DIR, exist_ok=True)
 
     progress_cb("Подготовка резервной копии…")
     items = list(_iter_code_files())
     total = len(items)
+
+    # Защита: пустой бэкап означает, что обходить было нечего (APP_ROOT не там).
+    # Не создаём бесполезный архив и не пускаем обновление дальше.
+    if total == 0:
+        raise RuntimeError(
+            "Обновление прервано: резервная копия пуста — в папке приложения "
+            f"(APP_ROOT={paths.APP_ROOT}) не найдено файлов кода. Диск не изменён."
+        )
 
     ver = paths.get_version()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -162,6 +203,8 @@ def apply_update(zip_path: str, progress_cb=None):
     идёт только по содержимому архива).
     """
     progress_cb = progress_cb or _noop
+    _assert_app_root("apply_update")
+    root_real = os.path.realpath(paths.APP_ROOT)
 
     with zipfile.ZipFile(zip_path) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
@@ -172,7 +215,6 @@ def apply_update(zip_path: str, progress_cb=None):
         try:
             zf.extractall(staging)
 
-            src_root = os.path.join(staging, prefix.rstrip("/")) if prefix else staging
             total = len(names)
             progress_cb(f"Применение файлов: 0/{total}…")
 
@@ -185,6 +227,11 @@ def apply_update(zip_path: str, progress_cb=None):
                     continue
                 src = os.path.join(staging, n)
                 dst = os.path.join(paths.APP_ROOT, rel)
+                # Защита от zip-slip: целевой путь обязан лежать внутри APP_ROOT.
+                dst_real = os.path.realpath(dst)
+                if dst_real != root_real and not dst_real.startswith(root_real + os.sep):
+                    logger.warning("Пропущен файл вне APP_ROOT: %s", rel)
+                    continue
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
                 copied += 1
