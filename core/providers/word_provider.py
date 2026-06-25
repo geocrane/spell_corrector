@@ -57,7 +57,10 @@ def _merge_false_splits(sentences, doc_com):
         gap = nxt["range_start"] - cur["range_end"]
 
         should_merge = False
-        if gap <= 2:
+        # ends_para: cur завершает абзац (\r) или ячейку таблицы (\x07) —
+        # через границу абзаца склейка запрещена (каждый пункт списка / абзац
+        # остаётся отдельным предложением).
+        if gap <= 2 and not cur.get("ends_para", False):
             try:
                 gap_text = doc_com.Range(cur["range_end"], nxt["range_start"]).Text or ""
             except Exception:
@@ -85,6 +88,8 @@ def _merge_false_splits(sentences, doc_com):
                 "range_end": new_end,
                 "text": new_text,
                 "in_table": cur.get("in_table", False),
+                # объединённое предложение заканчивается там же, где nxt
+                "ends_para": nxt.get("ends_para", False),
             }
         else:
             merged.append(nxt)
@@ -424,6 +429,11 @@ def _extract_sentences_from_doc(doc_com):
                     "range_end": sent_range.End - trailing,
                     "text": text,
                     "in_table": in_table,
+                    # \r (конец абзаца) и \x07 (ячейка таблицы) Word включает в
+                    # конец диапазона предложения. Запоминаем это здесь: в
+                    # _merge_false_splits «зазор» между предложениями пуст и
+                    # детектировать границу абзаца по нему нельзя.
+                    "ends_para": ('\r' in raw) or ('\x07' in raw),
                 })
             except Exception:
                 continue
